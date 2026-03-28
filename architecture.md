@@ -106,12 +106,18 @@ WiFi:
 
 ### VPN 方式の選択
 
+上位レイヤーは常に WireGuard (wg0) に統一し、BGP/IPv6/firewall 設定を1セットに保つ。
+
 ```
-プロキシ解除が可能 → WireGuard or IKEv2
-プロキシ解除が不可 → SoftEther VPN で代替
+プロキシ解除が可能 → WireGuard 直接 (UDP)
+プロキシ解除が不可 → WireGuard over SoftEther (HTTPS 経由)
 ```
 
-会場の上流 (blackbox) がプロキシを挟む可能性があるため、当日の環境に応じて切り替え。
+会場の上流 (blackbox) がプロキシを挟む可能性があるため、当日の環境に応じて下位トンネルのみ切り替え。
+
+- wg0 の MTU は 1400 に固定 (SoftEther 経由時のオーバーヘッドを考慮)
+- 直接接続時: `endpoint = <自宅グローバルIP>:51820`
+- SoftEther 経由時: `endpoint = <SoftEther tap 対向IP>:51820`
 
 ### GCP 接続
 

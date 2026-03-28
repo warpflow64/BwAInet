@@ -30,7 +30,7 @@ flowchart TB
   end
  subgraph s2["会場"]
         n1["192.168.0.0/16<br>11.0/24 vlan 11: mgmt (v4 only)<br>30.0/24 vlan 30: staff + live (v4 + v6)<br>40.0/22 vlan 40: user (v4 + v6)<br>vlan 30, 40 共通: DHCPv6-PD /64 (OPTAGE→自宅経由)"]
-        n2["Router構築方針<br>当日プロキシ解除が不確実のため VyOS採用<br>プロキシ無効化可能 → Wireguard or IKEv2<br>不可能 → SoftEther VPN で代替"]
+        n2["Router構築方針<br>当日プロキシ解除が不確実のため VyOS採用<br>プロキシ無効化可能 → WireGuard 直接<br>不可能 → WireGuard over SoftEther<br>上位は常に wg0 (BGP/IPv6/firewall 設定を統一)<br>wg0 MTU 1400 (SE経由時も対応)"]
         n4["ACL (v4)<br>vlan 30 (staff) → vlan 11 (mgmt): 許可<br>vlan 40 (user) → default GW: 許可<br>vlan 40 (user) → vlan 11: DNS (UDP/TCP 53), DHCP (UDP 67-68) のみ許可<br>vlan 40 (user) → 他 vlan: 拒否<br>---<br>IPv6: vlan 30, 40 は同一 /64 を共有 (RA)<br>mgmt (vlan 11) は v6 なし → v6 経由のアクセス不可<br>ndppd でインバウンド NDP proxy"]
         r3["Router<br>AS65001"]
         sw["PoE SW<br>"]
