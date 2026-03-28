@@ -61,6 +61,10 @@ VLAN 30/40 が同一 /64 を共有しても安全である理由:
 2. **v4 ACL は独立して機能** → VLAN 40 から VLAN 11 のインフラへの v4 アクセスは DNS/DHCP のみ許可
 3. **機密資産は全て VLAN 11 に隔離** → VLAN 30/40 間の v6 通信が発生しても影響は限定的
 
+### RA フラグと DHCPv6
+
+SLAAC と DHCPv6 を併用する。iOS/Android は DHCPv6 IA_NA 非対応のため、SLAAC を維持しつつ Windows/macOS 向けに DHCPv6 も有効化する。RDNSS は Android の DNS 解決に必須。RA フラグ: A=1, M=1, O=1, RDNSS 設定。
+
 ### ndppd (NDP Proxy)
 
 同一 /64 を複数の VLAN インターフェースに割り当てる場合、インバウンド IPv6 トラフィックを正しいインターフェースに振り分けるために ndppd が必要。
@@ -168,11 +172,41 @@ set firewall options interface wg0 adjust-mss clamp-mss-to-pmtu
 
 GCP VGW (AS64512) との Site-to-Site VPN で、GCE 上のサービス (Grafana, DNS standby, DHCP standby, rsyslog) に接続。
 
-## サービス冗長化
+## DNS / DHCP (VyOS 統一構成)
 
-| サービス | ローカルサーバー (会場) | GCE | 同期方式 |
-|---------|----------------------|-----|---------|
-| DNS (Unbound) | active | standby | zone sync |
-| DHCP (Kea) | primary | standby | Kea HA sync |
-| Grafana | local monitor | active (外部公開) | Prometheus remote_write |
-| syslog | rsyslog | rsyslog + S3 | forward |
+DNS・DHCP を VyOS (r3) に統合し、別サーバー + GCE 冗長構成を廃止。アップリンクが 1 本のため r3 障害時には GCE standby にも到達不能であり、冗長化の実効性がない。
+
+| サービス | 実装 | 備考 |
+|---------|------|------|
+| DNS | VyOS `service dns forwarding` (PowerDNS Recursor) | クエリログ有効 |
+| DHCPv4 | VyOS `service dhcp-server` (内部 Kea) | forensic log 有効 |
+| DHCPv6 | VyOS `service dhcpv6-server` (内部 Kea) | Windows/macOS 用。iOS/Android は SLAAC |
+
+### RA フラグ設定
+
+| フラグ | 値 | 効果 |
+|---|---|---|
+| A (autonomous) | 1 | SLAAC 有効 (iOS/Android 用) |
+| M (managed) | 1 | DHCPv6 アドレス割り当て (Windows/macOS 用) |
+| O (other-config) | 1 | DHCPv6 で DNS 等の追加情報取得 |
+| RDNSS | 設定 | Android の DNS 解決に必須 |
+
+## サービス構成
+
+| サービス | 配置 | 役割 |
+|---------|------|------|
+| DNS / DHCP | VyOS (r3) | 名前解決 / IP 配布 |
+| Grafana | Local Server (local) / GCE (active, 外部公開) | 監視ダッシュボード |
+| rsyslog | Local Server → GCE → S3 | ログ集約・アーカイブ |
+| nfcapd | Local Server | NetFlow 収集 |
+
+## 通信ログ保存 (法執行機関対応)
+
+詳細は [`logging-compliance.md`](logging-compliance.md) を参照。
+
+| ログ種別 | 記録元 | 収集先 | 保存期間 |
+|---------|--------|--------|---------|
+| NetFlow v9 (5-tuple) | VyOS flow-accounting | nfcapd → GCE → S3 | 180 日 |
+| DNS クエリログ | VyOS dns forwarding | rsyslog → GCE → S3 | 180 日 |
+| DHCP forensic log | VyOS dhcp-server (Kea hook) | rsyslog → GCE → S3 | 180 日 |
+| NDP テーブルダンプ | VyOS cron (1 分間隔) | rsyslog → GCE → S3 | 180 日 |
