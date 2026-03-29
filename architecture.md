@@ -40,7 +40,7 @@
 
 ### 概要
 
-OPTAGE (自宅 ISP) から DHCPv6-PD で /64 を取得し、自宅 VyOS 経由のトンネルを通じて会場に転送。VLAN 30 と 40 の両方で同一 /64 を RA 広告する。
+OPTAGE (自宅 ISP) から DHCPv6-PD で /64 を取得する。OPTAGE は /64 のみ委任のため、自宅 LAN (192.168.10.0/24) は IPv4 only とし、取得した /64 は全て WireGuard トンネル経由で会場に転送する。会場側 r3 が VLAN 30 と 40 の両方で同一 /64 を RA 広告する。
 
 ### トラフィックフロー
 
@@ -97,6 +97,25 @@ WiFi:
 - **WiFi 来場者**: WLC が帯域上限を設定
 - **WiFi 運営**: WLC が優先キューを割り当て
 - **有線接続 (運営/配信)**: WLC を経由しないため QoS 制限なし。有線で接続するだけで実質的に最高優先度
+
+## 自宅 VyOS (r1) 設計
+
+詳細は [`home-vyos.md`](home-vyos.md) を参照。
+
+### 概要
+
+自宅ルーターを NEC IX3315 から VyOS に移行する。家族用ネットワーク 192.168.10.0/24 は現行と同一の IP 体系・DHCP・DNS 設定を維持し、ダウンタイムを最小化する。
+
+| 機能 | 設定 |
+|------|------|
+| WAN | PPPoE (OPTAGE) → pppoe0 |
+| LAN | br0 (eth1–eth4): 192.168.10.1/24 |
+| DHCP | 192.168.10.3–199, 固定割り当て 3 台 |
+| DNS | フォワーディング (192.168.10.1) |
+| NAT | source masquerade + destination (→.9: SSH/HTTP/HTTPS/iperf3/WireGuard) |
+| IPv6 | DHCPv6-PD /64 を取得、自宅 LAN は IPv4 only、/64 は全て wg0 経由で会場へ転送 |
+| WireGuard | wg0: 10.255.0.1/30, port 51820, MTU 1380 |
+| BGP | AS65002 (backup to GCP VGW) |
 
 ## VPN / ルーティング
 
