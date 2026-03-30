@@ -157,8 +157,8 @@ VyOS 内蔵 Kea の設定ファイル (`/etc/kea/kea-dhcp4.conf`) に直接 hook
 ## 5. VyOS Flow-Accounting 設定 (NetFlow v9)
 
 ```
-set system flow-accounting interface eth0.30
-set system flow-accounting interface eth0.40
+set system flow-accounting interface eth2.30
+set system flow-accounting interface eth2.40
 set system flow-accounting interface wg0
 set system flow-accounting netflow version 9
 set system flow-accounting netflow server 192.168.11.10 port 2055
@@ -169,11 +169,11 @@ set system flow-accounting netflow source-ip 192.168.11.1
 ```
 
 対象インターフェース:
-- `eth0.30` — staff + live トラフィック
-- `eth0.40` — user トラフィック
+- `eth2.30` — staff + live トラフィック
+- `eth2.40` — user トラフィック
 - `wg0` — VPN トンネル経由の全トラフィック
 
-※ `eth0.11` (mgmt) は対象外
+※ `eth2.11` (mgmt) は対象外
 
 ## 6. VyOS RA 設定
 
@@ -181,17 +181,17 @@ IPv6 アドレス追跡のため、SLAAC と DHCPv6 を併用する。
 
 ```
 # VLAN 30
-set interfaces ethernet eth0 vif 30 ipv6 address autoconf
-set service router-advert interface eth0.30 prefix <delegated-prefix>::/64 autonomous-flag true
-set service router-advert interface eth0.30 managed-flag true
-set service router-advert interface eth0.30 other-config-flag true
-set service router-advert interface eth0.30 name-server <prefix>::1
+set interfaces ethernet eth2 vif 30 ipv6 address autoconf
+set service router-advert interface eth2.30 prefix <delegated-prefix>::/64 autonomous-flag true
+set service router-advert interface eth2.30 managed-flag true
+set service router-advert interface eth2.30 other-config-flag true
+set service router-advert interface eth2.30 name-server <prefix>::1
 
 # VLAN 40
-set service router-advert interface eth0.40 prefix <delegated-prefix>::/64 autonomous-flag true
-set service router-advert interface eth0.40 managed-flag true
-set service router-advert interface eth0.40 other-config-flag true
-set service router-advert interface eth0.40 name-server <prefix>::1
+set service router-advert interface eth2.40 prefix <delegated-prefix>::/64 autonomous-flag true
+set service router-advert interface eth2.40 managed-flag true
+set service router-advert interface eth2.40 other-config-flag true
+set service router-advert interface eth2.40 name-server <prefix>::1
 ```
 
 | フラグ | 値 | 効果 |
@@ -237,8 +237,8 @@ set system task-scheduler task ndp-dump executable path /config/scripts/ndp-dump
 ### 出力例
 
 ```
-2026-08-10T14:30:00Z fe80::1a2b:3c4d:5e6f:7890 dev eth0.40 lladdr aa:bb:cc:dd:ee:ff REACHABLE
-2026-08-10T14:30:00Z 2001:db8::abcd dev eth0.30 lladdr 11:22:33:44:55:66 STALE
+2026-08-10T14:30:00Z fe80::1a2b:3c4d:5e6f:7890 dev eth2.40 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+2026-08-10T14:30:00Z 2001:db8::abcd dev eth2.30 lladdr 11:22:33:44:55:66 STALE
 ```
 
 ## 8. nfcapd コレクター構成 (Local Server)
