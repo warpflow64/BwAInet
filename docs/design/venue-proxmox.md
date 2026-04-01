@@ -19,11 +19,15 @@
 | 項目 | 仕様 |
 |------|------|
 | CPU | Intel Core i5-9500T (6C/6T) |
-| RAM | 16GB 以上推奨 |
-| ストレージ | M.2 NVMe SSD |
+| RAM | DDR4 32GB |
+| ストレージ | M.2 NVMe SSD 512GB + HDD 1TB |
 | フォームファクタ | Micro (約 182 × 178 × 36 mm) |
 
-RAM 目安: VyOS VM 2GB + SoftEther CT 512MB + ローカルサーバー CT 2–4GB + Proxmox ホスト 2GB = 約 8GB。16GB あれば十分な余裕。
+RAM 目安: VyOS VM 4GB + SoftEther CT 512MB + ローカルサーバー CT 8GB + Proxmox ホスト 2GB = 約 14.5GB。32GB あるため余裕は十分。
+
+ストレージ用途:
+- **NVMe SSD 512GB**: Proxmox OS、VM/CT のルートディスク
+- **HDD 1TB**: ログ保存 (rsyslog, nfcapd)、Grafana データなど長期保存用
 
 ### NIC 構成
 
@@ -104,11 +108,18 @@ SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="<USB NIC MAC>", NAME="enxusb0"
 
 ## VM / CT 構成
 
-| 種別 | 名称 | OS | リソース | NIC | 役割 |
-|------|------|-----|---------|-----|------|
-| VM | r3-vyos | VyOS | 2 vCPU, 2GB RAM | eth0 (vmbr0), eth1 (vmbr1), eth2 (vmbr_trunk) | ルーター、DNS/DHCP、BGP、NetFlow |
-| CT | softether | Debian / Alpine | 1 vCPU, 512MB RAM | eth0 (vmbr0), tap→vmbr1 | SoftEther クライアント、プロキシ経由トンネル |
-| CT | local-srv | Debian | 2 vCPU, 2–4GB RAM | eth0 (vmbr_trunk, VLAN 11) | Grafana, rsyslog, nfcapd, SNMP Exporter |
+| 種別 | 名称 | OS | vCPU | RAM | ディスク | NIC | 役割 |
+|------|------|-----|------|-----|---------|-----|------|
+| VM | r3-vyos | VyOS | 2 | 4GB | SSD 8GB | eth0 (vmbr0), eth1 (vmbr1), eth2 (vmbr_trunk) | ルーター、DNS/DHCP、BGP、NetFlow |
+| CT | softether | Debian / Alpine | 1 | 512MB | SSD 4GB | eth0 (vmbr0), tap→vmbr1 | SoftEther クライアント、プロキシ経由トンネル |
+| CT | local-srv | Debian | 2 | 8GB | SSD 32GB + HDD 1TB マウント | eth0 (vmbr_trunk, VLAN 11) | Grafana, rsyslog, nfcapd, SNMP Exporter |
+
+### リソース割り振りの根拠
+
+- **r3-vyos**: VyOS 自体は軽量だが、BGP・DNS/DHCP・Flow Accounting を同時処理するため RAM 4GB を確保。ディスクは設定とログ程度なので 8GB で十分
+- **softether**: トンネル維持のみの最小構成。LXC コンテナのためオーバーヘッドも小さい
+- **local-srv**: Grafana + rsyslog + nfcapd + SNMP Exporter が同居するため最もリソースを消費。RAM 8GB は Grafana のダッシュボード描画と nfcapd のフローデータ処理に必要。HDD 1TB を `/var/log` や nfcapd データディレクトリにマウントし長期保存に使用
+- **残余リソース**: RAM 約 17GB、SSD 約 450GB が空き。追加の CT (監視系等) にも対応可能
 
 ## SoftEther の役割分担
 
