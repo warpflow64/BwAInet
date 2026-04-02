@@ -37,6 +37,7 @@ flowchart TB
         end
         sw["PoE SW<br>"]
         ap3_8["Cisco<br>Aironet 3800"]
+        wlc["Cisco 3504<br>WLC"]
         unmanaged
         pc1["YouTube<br>Live Streaming"]
         pc3["Speaker"]
@@ -51,10 +52,12 @@ flowchart TB
     r3 -- native vlan 11 --- server
     r3 -. "NetFlow v9<br>(UDP 2055)" .-> nfcapd_l
     sw -- allowed vlan 11, 30, 40 --- ap3_8
+    sw -- native vlan 11 --- wlc
+    wlc -. CAPWAP .-> ap3_8
     sw -- native vlan 30 --- pc1
     sw -- native vlan 30 --- pc3
-    r3 == primary BGP (AS65001) ==> vgw
-    r1 == backup BGP (AS65002) ==> vgw
+    r3 == "WireGuard (wg1)<br>primary BGP (AS65001)" ==> vgw
+    r1 == "WireGuard (wg1)<br>backup BGP (AS65002)" ==> vgw
     syslog_l -. forward .-> syslog_a
     snmp -. remote_write .-> grafana_a
     snmp -.-> grafana_l

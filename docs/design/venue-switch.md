@@ -37,7 +37,7 @@
 | XSGe 0/2 | r1-home eth3 (構築時) | trunk | 11,30,40 | 構築時のみ。会場では未使用 |
 | 5Ge 0/1 | Proxmox onboard NIC | trunk | 11,30,40 | r3-vyos VLAN トランク (1GbE ネゴ) |
 | 5Ge 0/2 | WLC (Cisco 3504) | trunk | 11,30,40 | native VLAN 11 |
-| Ge 0/3–7 | AP (Aironet 3800) | access | 11 | CAPWAP、PoE 給電 |
+| Ge 0/3–7 | AP (Aironet 3700/3800) | access | 11 | CAPWAP、PoE 給電。sw01 では最大 5 台。残り 15 台は追加 PoE スイッチ経由で VLAN 11 に収容 |
 | Ge 0/8–9 | 運営有線 | access | 30 | 配信 PC、スピーカー |
 | Ge 0/10 | 予備 | shutdown | — | |
 

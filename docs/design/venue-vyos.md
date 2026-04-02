@@ -12,7 +12,7 @@ r3-vyos は会場 Proxmox サーバー上の VM として動作する VyOS ル�
 - NetFlow v9 (通信ログ)
 - NDP テーブルダンプ (IPv6 追跡)
 
-VM リソース: 2 vCPU, 2GB RAM。詳細は [`venue-proxmox.md`](venue-proxmox.md) を参照。
+VM リソース: 2 vCPU, 4GB RAM。詳細は [`venue-proxmox.md`](venue-proxmox.md) を参照。
 
 ## 1. インターフェース
 
@@ -102,7 +102,7 @@ AP 等の管理機器向け。静的割り当ては [`mgmt-vlan-address.md`](mgm
 
 | 項目 | 値 |
 |------|-----|
-| レンジ | 192.168.11.100 – .199 |
+| レンジ | 192.168.11.20 – .199 |
 | GW | 192.168.11.1 |
 | DNS | 192.168.11.1 |
 | リース | 3600s (default) / 7200s (max) |
@@ -129,7 +129,7 @@ AP 等の管理機器向け。静的割り当ては [`mgmt-vlan-address.md`](mgm
 # === DHCP サーバー ===
 
 # VLAN 11 (mgmt)
-set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 range 0 start 192.168.11.100
+set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 range 0 start 192.168.11.20
 set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 range 0 stop 192.168.11.199
 set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 default-router 192.168.11.1
 set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 name-server 192.168.11.1
@@ -377,7 +377,7 @@ set system flow-accounting interface eth2.30
 set system flow-accounting interface eth2.40
 set system flow-accounting interface wg0
 set system flow-accounting netflow version 9
-set system flow-accounting netflow server 192.168.11.10 port 2055
+set system flow-accounting netflow server 192.168.11.2 port 2055
 set system flow-accounting netflow timeout expiry-interval 60
 set system flow-accounting netflow timeout flow-active 120
 set system flow-accounting netflow timeout flow-inactive 15
@@ -386,12 +386,12 @@ set system flow-accounting netflow source-ip 192.168.11.1
 
 ## 10. Syslog
 
-全ログを Local Server (192.168.11.10) に転送。DNS クエリログ、DHCP forensic ログ、NDP ダンプが含まれる。
+全ログを Local Server (192.168.11.2) に転送。DNS クエリログ、DHCP forensic ログ、NDP ダンプが含まれる。
 
 ```
 # === Syslog ===
 
-set system syslog host 192.168.11.10 facility all level info
+set system syslog host 192.168.11.2 facility all level info
 ```
 
 ## 11. NDP テーブルダンプ
@@ -488,7 +488,7 @@ set interfaces wireguard wg1 peer r2-gcp port 51821
 set interfaces wireguard wg1 peer r2-gcp persistent-keepalive 25
 
 # --- DHCP サーバー ---
-set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 range 0 start 192.168.11.100
+set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 range 0 start 192.168.11.20
 set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 range 0 stop 192.168.11.199
 set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 default-router 192.168.11.1
 set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 name-server 192.168.11.1
@@ -609,14 +609,14 @@ set system flow-accounting interface eth2.30
 set system flow-accounting interface eth2.40
 set system flow-accounting interface wg0
 set system flow-accounting netflow version 9
-set system flow-accounting netflow server 192.168.11.10 port 2055
+set system flow-accounting netflow server 192.168.11.2 port 2055
 set system flow-accounting netflow timeout expiry-interval 60
 set system flow-accounting netflow timeout flow-active 120
 set system flow-accounting netflow timeout flow-inactive 15
 set system flow-accounting netflow source-ip 192.168.11.1
 
 # --- Syslog ---
-set system syslog host 192.168.11.10 facility all level info
+set system syslog host 192.168.11.2 facility all level info
 
 # --- NDP ダンプ ---
 set system task-scheduler task ndp-dump interval 1m

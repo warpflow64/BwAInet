@@ -161,7 +161,7 @@ set system flow-accounting interface eth2.30
 set system flow-accounting interface eth2.40
 set system flow-accounting interface wg0
 set system flow-accounting netflow version 9
-set system flow-accounting netflow server 192.168.11.10 port 2055
+set system flow-accounting netflow server 192.168.11.2 port 2055
 set system flow-accounting netflow timeout expiry-interval 60
 set system flow-accounting netflow timeout flow-active 120
 set system flow-accounting netflow timeout flow-inactive 15
@@ -243,7 +243,7 @@ set system task-scheduler task ndp-dump executable path /config/scripts/ndp-dump
 
 ## 8. nfcapd コレクター構成 (Local Server)
 
-ローカルサーバー (192.168.11.10) で nfcapd を稼働させ、VyOS からの NetFlow を受信。
+ローカルサーバー (192.168.11.2) で nfcapd を稼働させ、VyOS からの NetFlow を受信。
 
 ### インストール
 
@@ -281,7 +281,7 @@ VyOS のログ (DNS クエリ、DHCP forensic、NDP ダンプ) は syslog 経由
 
 ```
 # VyOS → Local Server
-set system syslog host 192.168.11.10 facility all level info
+set system syslog host 192.168.11.2 facility all level info
 
 # Local Server rsyslog.conf → GCE 転送 (既存パイプライン活用)
 # *.* @@<gce-ip>:514

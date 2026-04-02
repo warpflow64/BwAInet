@@ -16,7 +16,7 @@
 | アドレス | ホスト名 | 機器 / 役割 | 備考 |
 |---------|---------|------------|------|
 | 192.168.11.1 | r3-vyos | VyOS ルーター (VLAN 11 GW) | DNS/DHCP/BGP/NetFlow |
-| 192.168.11.2 | local-srv | SoftEther サーバー + ローカルサーバー CT | Grafana, rsyslog, nfcapd, SNMP Exporter |
+| 192.168.11.2 | local-srv | ローカルサーバー CT | Grafana, rsyslog, nfcapd, SNMP Exporter |
 | 192.168.11.3 | proxmox | Proxmox VE ホスト (Dell OptiPlex 3070 Micro) | 管理 WebUI (8006/tcp) |
 | 192.168.11.4 | sw01 | PoE スイッチ | VLAN 11/30/40 トランク |
 | 192.168.11.5 | wlc01 | Cisco 3504 WLC | Aironet 3800 AP 管理、QoS 制御 |

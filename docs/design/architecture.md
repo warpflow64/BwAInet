@@ -108,9 +108,9 @@ WiFi:
 
 | VM/CT | 役割 | リソース |
 |-------|------|---------|
-| r3-vyos (VM) | ルーター、DNS/DHCP、BGP、NetFlow | 2 vCPU, 2GB RAM |
+| r3-vyos (VM) | ルーター、DNS/DHCP、BGP、NetFlow | 2 vCPU, 4GB RAM |
 | softether (CT) | SoftEther クライアント (プロキシ経由トンネル) | 1 vCPU, 512MB RAM |
-| local-srv (CT) | Grafana, rsyslog, nfcapd, SNMP Exporter | 2 vCPU, 2–4GB RAM |
+| local-srv (CT) | Grafana, rsyslog, nfcapd, SNMP Exporter | 2 vCPU, 8GB RAM |
 
 | NIC | チップ | 役割 |
 |-----|--------|------|

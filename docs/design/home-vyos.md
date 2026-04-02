@@ -725,54 +725,42 @@ set service https api rest strict
 
 ## 構築作業用の一時設定 (eth3)
 
-eth3 にスイッチを接続し、会場の r3 (Proxmox) を配下に繋いで構築作業を行うための一時設定。
+eth3 に RJ45 SFP+ モジュール経由で Proxmox (USB 2.5GbE) を直結し、会場上流 (blackbox) を再現する。
+eth3 は会場当日の `10.64.56.0/22` を DHCP で配布し、r3 eth0 (`address dhcp`) が本番同等の条件で動作することを検証する。
 構築完了後に削除すること。
 
-### 追加した設定
+### 設定内容
 
 ```
-set interfaces ethernet eth3 vif 11 address 192.168.11.254/24
-set interfaces ethernet eth3 vif 11 description 'MGMT VLAN (construction)'
-set protocols static route 192.168.30.0/24 next-hop 192.168.11.1
-set protocols static route 192.168.40.0/22 next-hop 192.168.11.1
-set service dns forwarding listen-address 192.168.11.254
+set interfaces ethernet eth3 address 10.64.56.1/22
+set interfaces ethernet eth3 description 'Venue upstream simulator'
+
+set service dhcp-server shared-network-name VENUE-TEST subnet 10.64.56.0/22 subnet-id 2
+set service dhcp-server shared-network-name VENUE-TEST subnet 10.64.56.0/22 range 0 start 10.64.56.100
+set service dhcp-server shared-network-name VENUE-TEST subnet 10.64.56.0/22 range 0 stop 10.64.56.199
+set service dhcp-server shared-network-name VENUE-TEST subnet 10.64.56.0/22 option default-router 10.64.56.1
+set service dhcp-server shared-network-name VENUE-TEST subnet 10.64.56.0/22 option name-server 10.64.56.1
+set service dhcp-server listen-interface eth3
+
+set service dns forwarding listen-address 10.64.56.1
+set service dns forwarding allow-from 10.64.56.0/22
+
+set nat source rule 140 outbound-interface name pppoe0
+set nat source rule 140 source address 10.64.56.0/22
+set nat source rule 140 translation address masquerade
+set nat source rule 140 description 'Venue upstream test'
 ```
-
-### 変更した設定
-
-| 項目 | 変更前 | 変更後 |
-|------|--------|--------|
-| static route 192.168.11.0/24 | next-hop 10.255.0.2 (wg0) | 削除 (connected route で到達) |
-| static route 192.168.30.0/24 | next-hop 10.255.0.2 (wg0) | next-hop 192.168.11.1 (eth3.11) |
-| static route 192.168.40.0/22 | next-hop 10.255.0.2 (wg0) | next-hop 192.168.11.1 (eth3.11) |
 
 ### 削除手順 (構築完了後)
 
 ```
-# 一時設定の削除
-delete interfaces ethernet eth3 vif 11
-delete protocols static route 192.168.30.0/24 next-hop 192.168.11.1
-delete protocols static route 192.168.40.0/22 next-hop 192.168.11.1
-delete service dns forwarding listen-address 192.168.11.254
-
-# wg0 経由の static route を復元
-set protocols static route 192.168.11.0/24 next-hop 10.255.0.2
-set protocols static route 192.168.30.0/24 next-hop 10.255.0.2
-set protocols static route 192.168.40.0/22 next-hop 10.255.0.2
-```
-
-### API で削除する場合
-
-```bash
-curl -sk -X POST https://192.168.10.1/configure -F data='[
-  {"op": "delete", "path": ["interfaces", "ethernet", "eth3", "vif", "11"]},
-  {"op": "delete", "path": ["protocols", "static", "route", "192.168.30.0/24", "next-hop", "192.168.11.1"]},
-  {"op": "delete", "path": ["protocols", "static", "route", "192.168.40.0/22", "next-hop", "192.168.11.1"]},
-  {"op": "delete", "path": ["service", "dns", "forwarding", "listen-address", "192.168.11.254"]},
-  {"op": "set", "path": ["protocols", "static", "route", "192.168.11.0/24", "next-hop", "10.255.0.2"]},
-  {"op": "set", "path": ["protocols", "static", "route", "192.168.30.0/24", "next-hop", "10.255.0.2"]},
-  {"op": "set", "path": ["protocols", "static", "route", "192.168.40.0/22", "next-hop", "10.255.0.2"]}
-]' -F key='BwAI'
+delete interfaces ethernet eth3 address 10.64.56.1/22
+delete interfaces ethernet eth3 description
+delete service dhcp-server shared-network-name VENUE-TEST
+delete service dhcp-server listen-interface eth3
+delete service dns forwarding listen-address 10.64.56.1
+delete service dns forwarding allow-from 10.64.56.0/22
+delete nat source rule 140
 ```
 
 ## 注意事項
