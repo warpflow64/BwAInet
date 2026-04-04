@@ -108,8 +108,7 @@ WiFi:
 
 | VM/CT | 役割 | リソース |
 |-------|------|---------|
-| r3-vyos (VM) | ルーター、DNS/DHCP、BGP、NetFlow | 2 vCPU, 4GB RAM |
-| softether (CT) | SoftEther クライアント (プロキシ経由トンネル) | 1 vCPU, 512MB RAM |
+| r3-vyos (VM) | ルーター、DNS/DHCP、BGP、NetFlow、wstunnel (podman) | 2 vCPU, 4GB RAM |
 | local-srv (CT) | Grafana, rsyslog, nfcapd, SNMP Exporter | 2 vCPU, 8GB RAM |
 
 | NIC | チップ | 役割 |
@@ -117,7 +116,7 @@ WiFi:
 | オンボード | Realtek RTL8111H (1GbE) | トランク → PoE スイッチ |
 | 外付け | USB 2.5GbE (テープ固縛) | アップリンク → blackbox |
 
-SoftEther CT は VyOS の前段 (アップリンク側) に配置し、プロキシ環境時に WireGuard over SoftEther を実現する。プロキシ解除時は SoftEther CT を経由せず WireGuard 直接接続に切り替える。
+プロキシ環境時は VyOS 上の wstunnel (podman コンテナ) が WireGuard UDP パケットを WebSocket (TLS over TCP 443) にカプセル化し、HTTP CONNECT プロキシを透過する。プロキシ解除時は WireGuard endpoint を直接接続に切り替える。
 
 ## 自宅 VyOS (r1) 設計
 
@@ -145,7 +144,7 @@ SoftEther CT は VyOS の前段 (アップリンク側) に配置し、プロキ
 
 | プロトコル | 用途 |
 |-----------|------|
-| WireGuard (or SoftEther) | アンダーレイ VPN トンネル |
+| WireGuard (or wstunnel 経由) | アンダーレイ VPN トンネル |
 | BGP (AS65001 ↔ AS65002) | v4 デフォルトルート (AD20) でユーザートラフィックを自宅経由 |
 | DHCPv6-PD /64 転送 | 自宅で取得した /64 を会場へ static route |
 
@@ -155,13 +154,13 @@ SoftEther CT は VyOS の前段 (アップリンク側) に配置し、プロキ
 
 ```
 プロキシ解除が可能 → WireGuard 直接 (UDP)
-プロキシ解除が不可 → WireGuard over SoftEther (HTTPS 経由)
+プロキシ解除が不可 → WireGuard over wstunnel (WebSocket/TLS over TCP 443 経由)
 ```
 
 会場の上流 (blackbox) がプロキシを挟む可能性があるため、当日の環境に応じて下位トンネルのみ切り替え。
 
 - 直接接続時: `endpoint = <自宅グローバルIP>:51820`
-- SoftEther 経由時: `endpoint = <SoftEther tap 対向IP>:51820`
+- wstunnel 経由時: `endpoint = 127.0.0.1:51820` (VyOS 上の wstunnel podman コンテナが中継)
 
 ### MTU 設計
 
@@ -184,14 +183,14 @@ Cloudflare (1.1.1.1) への DF ビット付き ICMP で計測:
 WireGuard 直接 (UDP/IPv4):
   1492 - 20(IPv4) - 8(UDP) - 32(WG header) =    1432
 
-WireGuard over SoftEther:
-  1492 - 20(IPv4) - 8(UDP) - 32(WG) - ~40(SE) = ~1392
+WireGuard over wstunnel (WebSocket + TLS):
+  1492 - 20(IPv4) - 20(TCP) - 5(TLS record) - 14(WS frame) - 32(WG) = ~1401
 ```
 
 #### wg0 MTU 設定: 1380
 
 - WireGuard 直接時: 52B の余裕
-- SoftEther 経由時: 12B の余裕
+- wstunnel 経由時: 21B の余裕 (SoftEther 旧設計の 12B より改善)
 - トンネル内 IPv6 の TCP MSS: 1380 - 40(IPv6) - 20(TCP) = **1320**
 - IPv6 最小 MTU (1280, RFC 8200) まで **100B の余裕**
 
