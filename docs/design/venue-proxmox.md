@@ -137,9 +137,9 @@ SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="00:e0:4c:92:ee:41", NAME="enxus
 | 拠点 | 役割 | 配置 | 動作 |
 |------|------|------|------|
 | 自宅 | wstunnel **サーバー** | r1 配下 (192.168.10.4) | TCP 443 (WSS) で待ち受け。r1 の DNAT で外部からアクセス可能 |
-| 会場 | wstunnel **クライアント** | r3 VyOS 上の podman コンテナ | プロキシ (HTTP CONNECT) 経由で自宅サーバーに接続し、UDP トンネルを確立 |
+| 会場 | wstunnel **クライアント** | r3 VyOS 上の podman コンテナ | WSS (TCP 443) で自宅サーバーに接続し、UDP トンネルを確立 |
 
-wstunnel は WireGuard の UDP パケットを WebSocket (TLS) にカプセル化する。会場側は VyOS 内部の podman コンテナとして動作するため、専用 CT や内部ブリッジが不要。WireGuard は `endpoint = 127.0.0.1:51820` で wstunnel に接続し、wstunnel が eth0 (vmbr0) 経由でプロキシを通過して自宅に到達する。
+wstunnel は WireGuard の UDP パケットを WebSocket (TLS) にカプセル化する。会場側は VyOS 内部の podman コンテナとして動作するため、専用 CT や内部ブリッジが不要。WireGuard は `endpoint = 127.0.0.1:51820` で wstunnel に接続し、wstunnel が eth0 (vmbr0) 経由で TCP 443 により自宅に到達する。プロキシ環境の場合は `--http-proxy` オプションを追加する。
 
 ## WireGuard 経路の切替
 
@@ -154,14 +154,14 @@ r3 VyOS (wg0) → eth0 (vmbr0) → USB NIC → blackbox → Internet → 自宅 
 - WireGuard endpoint: `<自宅グローバル IP>:51820`
 - wstunnel コンテナは停止
 
-### wstunnel 経由 (プロキシ環境時)
+### wstunnel 経由 (ポート制限環境時)
 
 ```
-r3 VyOS (wg0 → localhost:51820) → wstunnel (podman) → eth0 (vmbr0) → proxy CONNECT → 自宅 wstunnel → r1
+r3 VyOS (wg0 → localhost:51820) → wstunnel (podman) → eth0 (vmbr0) → WSS (TCP 443) → 自宅 wstunnel → r1
 ```
 
 - WireGuard endpoint: `127.0.0.1:51820`
-- wstunnel コンテナが eth0 (vmbr0) 経由でプロキシを通過し、自宅に WebSocket (TLS) トンネルを確立
+- wstunnel コンテナが eth0 (vmbr0) 経由で TCP 443 (WSS) により自宅に WebSocket (TLS) トンネルを確立
 - **デフォルトルートの変更は不要** (wstunnel は VyOS 自身の eth0 から外に出る)
 
 ### 切替手順

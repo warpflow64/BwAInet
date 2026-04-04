@@ -152,18 +152,19 @@ VyOS 内蔵 Kea の設定ファイル (`/etc/kea/kea-dhcp4.conf`) に直接 hook
 
 ## 3. DNS フォワーディング
 
-VyOS 内蔵 PowerDNS Recursor を使用。全 VLAN からのクエリを受け付け、上流 DNS へフォワードする。クエリログは法執行機関対応のため有効化。
+VyOS 内蔵 PowerDNS Recursor をフルリゾルバ（再帰解決）として使用。全 VLAN および VyOS 自身からのクエリを受け付ける。上流フォワーダーは指定せず、ルートから再帰解決する。`dns forwarding system` は `system name-server` が自分自身の場合にフォワーディングループを起こすため使用しない（r1 と同様）。クエリログは法執行機関対応のため有効化。
 
 ```
-# === DNS フォワーディング ===
+# === DNS フォワーディング (フルリゾルバ) ===
 
 set service dns forwarding listen-address 192.168.11.1
 set service dns forwarding listen-address 192.168.30.1
 set service dns forwarding listen-address 192.168.40.1
+set service dns forwarding listen-address 127.0.0.1
 set service dns forwarding allow-from 192.168.11.0/24
 set service dns forwarding allow-from 192.168.30.0/24
 set service dns forwarding allow-from 192.168.40.0/22
-set service dns forwarding system
+set service dns forwarding allow-from 127.0.0.0/8
 
 # クエリログ有効化 (法執行対応)
 set service dns forwarding options 'log-common-errors=yes'
@@ -413,44 +414,45 @@ set system task-scheduler task ndp-dump interval 1m
 set system task-scheduler task ndp-dump executable path /config/scripts/ndp-dump.sh
 ```
 
-## 12. wstunnel (プロキシ環境時の WireGuard トンネル)
+## 12. wstunnel (ポート制限環境時の WireGuard トンネル)
 
-会場上流がプロキシ環境の場合、wstunnel を podman コンテナとして VyOS 上で動作させる。WireGuard の UDP パケットを WebSocket (TLS over TCP 443) にカプセル化し、HTTP CONNECT プロキシを透過する。
+会場上流でポート制限 (UDP 51820 等のブロック) がある場合、wstunnel を podman コンテナとして VyOS 上で動作させる。WireGuard の UDP パケットを WebSocket (TLS over TCP 443) にカプセル化し、ポート制限を回避する。
+
+> **補足**: プロキシ環境も併用される場合は `--http-proxy <proxy>:8080` を command に追加する。
 
 ### wstunnel の動作概要
 
 ```
 WireGuard (wg0, endpoint=127.0.0.1:51820)
   → wstunnel client (localhost:51820 を listen)
-    → HTTP CONNECT <proxy>:8080
-      → WSS (TLS) → 自宅 wstunnel server:443
-        → WireGuard (r1, port 51820)
+    → WSS (TLS, TCP 443) → 自宅 wstunnel server:443
+      → WireGuard (r1, port 51820)
 ```
 
 ### VyOS コンテナ設定
 
 ```
-# === wstunnel コンテナ (プロキシ環境時のみ使用) ===
+# === wstunnel コンテナ (ポート制限環境時に使用) ===
 
 set container name wstunnel image ghcr.io/erebe/wstunnel:latest
 set container name wstunnel allow-host-networks
-set container name wstunnel command 'client -L udp://127.0.0.1:51820:127.0.0.1:51820?timeout_sec=0 --http-proxy <venue-proxy>:8080 wss://<自宅グローバルIP>:443'
+set container name wstunnel command 'client -L udp://127.0.0.1:51820:192.168.10.1:51820?timeout_sec=0 wss://<自宅FQDN>:443'
 set container name wstunnel restart on-failure
-set container name wstunnel description 'WireGuard over WebSocket tunnel (proxy bypass)'
+set container name wstunnel description 'WireGuard over WebSocket tunnel (port restriction bypass)'
 ```
 
 - `allow-host-networks`: ホストネットワーク名前空間を共有 (localhost:51820 で WireGuard と通信するため必須)
-- `--http-proxy`: 会場プロキシのアドレス (当日確認して設定)
-- `wss://`: 自宅側 wstunnel サーバーのエンドポイント (TCP 443, TLS)
+- `192.168.10.1:51820`: wstunnel サーバー (メインPC) から見た r1 の WireGuard アドレス
+- `wss://`: 自宅側 wstunnel サーバーのエンドポイント (TCP 443, TLS)。FQDN 指定可
 
 ### WireGuard endpoint の切替
 
 ```
-# プロキシ環境時: wstunnel 経由
+# ポート制限環境時: wstunnel 経由
 set interfaces wireguard wg0 peer r1 endpoint '127.0.0.1:51820'
 commit
 
-# プロキシ解除時: 直接接続
+# ポート制限なし: 直接接続
 set interfaces wireguard wg0 peer r1 endpoint '<自宅グローバルIP>:51820'
 commit
 ```
@@ -460,10 +462,11 @@ commit
 自宅側はメインPC (192.168.10.4) で wstunnel サーバーを稼働させる。詳細は [`home-vyos.md`](home-vyos.md) を参照。
 
 ```bash
-wstunnel server --restrict-to 127.0.0.1:51820 wss://[::]:443
+wstunnel server --restrict-to 192.168.10.1:51820 wss://[::]:443
 ```
 
-r1 の DNAT で pppoe0:443 → 192.168.10.4:443 に転送する。
+- `--restrict-to 192.168.10.1:51820`: トンネル先を r1 の WireGuard に限定。wstunnel サーバーはメインPC で動作するため、r1 の LAN IP を指定する
+- r1 の DNAT で pppoe0:443 → 192.168.10.4:443 に転送する
 
 ## 13. システム基本設定
 
@@ -472,7 +475,7 @@ r1 の DNAT で pppoe0:443 → 192.168.10.4:443 に転送する。
 
 set system host-name r3-vyos
 set system time-zone Asia/Tokyo
-set system name-server 192.168.11.1
+set system name-server 127.0.0.1
 
 # SSH (管理 VLAN からのみ想定、VLAN 40 は input filter でブロック)
 set service ssh port 22
@@ -491,7 +494,7 @@ set service ssh disable-password-authentication
 # --- システム ---
 set system host-name r3-vyos
 set system time-zone Asia/Tokyo
-set system name-server 192.168.11.1
+set system name-server 127.0.0.1
 
 # --- SSH ---
 set service ssh port 22
@@ -534,12 +537,12 @@ set interfaces wireguard wg1 peer r2-gcp address 34.97.94.203
 set interfaces wireguard wg1 peer r2-gcp port 51821
 set interfaces wireguard wg1 peer r2-gcp persistent-keepalive 25
 
-# --- wstunnel コンテナ (プロキシ環境時のみ使用) ---
+# --- wstunnel コンテナ (ポート制限環境時に使用) ---
 set container name wstunnel image ghcr.io/erebe/wstunnel:latest
 set container name wstunnel allow-host-networks
-set container name wstunnel command 'client -L udp://127.0.0.1:51820:127.0.0.1:51820?timeout_sec=0 --http-proxy <venue-proxy>:8080 wss://<自宅グローバルIP>:443'
+set container name wstunnel command 'client -L udp://127.0.0.1:51820:192.168.10.1:51820?timeout_sec=0 wss://<自宅FQDN>:443'
 set container name wstunnel restart on-failure
-set container name wstunnel description 'WireGuard over WebSocket tunnel (proxy bypass)'
+set container name wstunnel description 'WireGuard over WebSocket tunnel (port restriction bypass)'
 
 # --- DHCP サーバー ---
 set service dhcp-server shared-network-name MGMT subnet 192.168.11.0/24 range 0 start 192.168.11.20
@@ -560,14 +563,15 @@ set service dhcp-server shared-network-name USER subnet 192.168.40.0/22 default-
 set service dhcp-server shared-network-name USER subnet 192.168.40.0/22 name-server 192.168.40.1
 set service dhcp-server shared-network-name USER subnet 192.168.40.0/22 lease 3600
 
-# --- DNS フォワーディング ---
+# --- DNS フォワーディング (フルリゾルバ、system はループ回避のため不使用) ---
 set service dns forwarding listen-address 192.168.11.1
 set service dns forwarding listen-address 192.168.30.1
 set service dns forwarding listen-address 192.168.40.1
+set service dns forwarding listen-address 127.0.0.1
 set service dns forwarding allow-from 192.168.11.0/24
 set service dns forwarding allow-from 192.168.30.0/24
 set service dns forwarding allow-from 192.168.40.0/22
-set service dns forwarding system
+set service dns forwarding allow-from 127.0.0.0/8
 set service dns forwarding options 'log-common-errors=yes'
 set service dns forwarding options 'quiet=no'
 set service dns forwarding options 'logging-facility=0'
