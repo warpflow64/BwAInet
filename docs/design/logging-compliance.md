@@ -41,6 +41,7 @@ iOS 14+ / Android 10+ / Windows 11 / macOS 15 はデフォルトでランダム 
 | DNS クエリ名 (qname) + 応答コード | DNS 応答レコード値 |
 | DHCP リース (IP ↔ MAC ↔ hostname) | ユーザー個人の認証情報 |
 | NDP テーブル (IPv6 ↔ MAC) | |
+| NAPT 変換マッピング (内部 IP:port ↔ グローバル IP:port) | |
 
 ## 2. ログ相関モデル
 
@@ -57,6 +58,9 @@ iOS 14+ / Android 10+ / Windows 11 / macOS 15 はデフォルトでランダム 
 
 [どこと通信した]
   NetFlow v9              → timestamp + 5-tuple + bytes/packets
+
+[NAT 変換]
+  Conntrack イベント (r1) → timestamp + NAPT 変換マッピング (内部 IP:port ↔ グローバル IP:port)
 ```
 
 ### 共通結合キー
@@ -72,7 +76,8 @@ iOS 14+ / Android 10+ / Windows 11 / macOS 15 はデフォルトでランダム 
 1. DNS クエリログから `example.com` を引いた client IP を特定
 2. NetFlow から当該 IP の通信フローを確認
 3. DHCP リースログ / NDP ダンプから IP → MAC → hostname を特定
-4. ※ MAC がランダムでも hostname + MAC + 時刻帯の組み合わせで捜査機関に提供可能
+4. Conntrack ログから内部 IP:port ↔ グローバル IP:port の NAPT 変換を特定
+5. ※ MAC がランダムでも hostname + MAC + 時刻帯の組み合わせで捜査機関に提供可能
 
 ## 3. VyOS DNS Forwarding 設定
 
@@ -175,7 +180,75 @@ set system flow-accounting netflow source-ip 192.168.11.1
 
 ※ `eth2.11` (mgmt) は対象外
 
-## 6. VyOS RA 設定
+## 6. Conntrack イベントログ (r1, NAPT 変換記録)
+
+自宅 VyOS (r1) の pppoe0 で masquerade による NAPT が行われるため、conntrack イベントを記録して変換マッピングを保持する。
+
+### なぜ必要か
+
+会場側の NetFlow は NAT 前の内部 IP を記録するが、法執行機関からの照会は「**グローバル IP X.X.X.X のポート Y から Z 時刻に通信があった**」という形式で来る。masquerade の変換テーブル (内部 IP:port ↔ グローバル IP:port) を記録しないと、グローバル IP 起点での内部デバイス特定ができない。
+
+### conntrack イベントロガー
+
+`conntrack -E` で NEW/DESTROY イベントをリアルタイムに syslog へ出力する。対象は会場サブネットのみ (家族用 LAN 192.168.10.0/24 は除外)。
+
+#### スクリプト (`/config/scripts/conntrack-logger.sh`)
+
+```bash
+#!/bin/bash
+# Conntrack イベントログ: 会場サブネットの NAPT 変換マッピングを syslog に記録
+# 対象: 192.168.11.0/24 (mgmt), 192.168.30.0/24 (staff), 192.168.40.0/22 (user)
+# 除外: 192.168.10.0/24 (家族用 LAN)
+conntrack -E -e NEW,DESTROY -o timestamp 2>/dev/null | \
+    grep --line-buffered -E 'src=(192\.168\.(11|30|4[0-3])\.)' | \
+    logger -t conntrack-nat -p local2.info
+```
+
+#### systemd サービス (`/etc/systemd/system/conntrack-logger.service`)
+
+```ini
+[Unit]
+Description=Conntrack NAT Translation Logger
+After=network.target
+
+[Service]
+ExecStart=/config/scripts/conntrack-logger.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### 有効化
+
+```bash
+chmod +x /config/scripts/conntrack-logger.sh
+systemctl daemon-reload
+systemctl enable --now conntrack-logger.service
+```
+
+### 出力例
+
+```
+[1723286400.123456]    [NEW] tcp      6 120 SYN_SENT src=192.168.40.123 dst=93.184.216.34 sport=54321 dport=443 [UNREPLIED] src=93.184.216.34 dst=<pppoe0-ip> sport=443 dport=12345
+[1723286460.789012] [DESTROY] tcp      6 src=192.168.40.123 dst=93.184.216.34 sport=54321 dport=443 src=93.184.216.34 dst=<pppoe0-ip> sport=443 dport=12345
+```
+
+読み方:
+- original tuple: `src=192.168.40.123 sport=54321` → 内部クライアント
+- reply tuple: `dst=<pppoe0-ip> dport=12345` → NAT 後のグローバル IP:ポート
+- NEW → セッション確立、DESTROY → セッション終了
+
+### syslog 転送 (r1 → Local Server)
+
+conntrack ログを WireGuard 経由で会場の Local Server (192.168.11.2) に転送し、既存のログパイプラインに合流させる。
+
+```
+set system syslog host 192.168.11.2 facility local2 level info
+```
+
+## 7. VyOS RA 設定
 
 IPv6 アドレス追跡のため、SLAAC と DHCPv6 を併用する。
 
@@ -212,7 +285,7 @@ set service router-advert interface eth2.40 name-server <prefix>::1
 
 iOS/Android は SLAAC のみで IPv6 アドレスを取得するため、NDP テーブルダンプで IPv6 ↔ MAC の対応を記録する必要がある。
 
-## 7. NDP テーブルダンプ
+## 8. NDP テーブルダンプ
 
 1 分間隔の cron で VyOS の IPv6 neighbor テーブルを記録。iOS/Android を含む全デバイスの IPv6 ↔ MAC 対応を取得する。
 
@@ -241,7 +314,7 @@ set system task-scheduler task ndp-dump executable path /config/scripts/ndp-dump
 2026-08-10T14:30:00Z 2001:db8::abcd dev eth2.30 lladdr 11:22:33:44:55:66 STALE
 ```
 
-## 8. nfcapd コレクター構成 (Local Server)
+## 9. nfcapd コレクター構成 (Local Server)
 
 ローカルサーバー (192.168.11.2) で nfcapd を稼働させ、VyOS からの NetFlow を受信。
 
@@ -273,7 +346,7 @@ WantedBy=multi-user.target
 - `-T all` — 全拡張フィールドを記録
 - `-t 300` — 5 分間隔でファイルローテーション
 
-## 9. 転送・アーカイブ (rsyslog → GCE → GCS)
+## 10. 転送・アーカイブ (rsyslog → GCE → GCS)
 
 ### rsyslog 転送設定 (VyOS → Local Server → GCE)
 
@@ -296,9 +369,9 @@ set system syslog host 192.168.11.2 facility all level info
 
 ### GCS 保存先
 
-ログは保持ポリシー (Retention Policy) 付きの `bwai-compliance-logs` バケットに保存 (180 日保持、ロック済み)。詳細はセクション 10「ログ封印」を参照。
+ログは保持ポリシー (Retention Policy) 付きの `bwai-compliance-logs` バケットに保存 (180 日保持、ロック済み)。詳細はセクション 11「ログ封印」を参照。
 
-## 10. イベント終了後のログ封印
+## 11. イベント終了後のログ封印
 
 イベント終了後、ログファイルの改ざんがないことを証明するため、全ログのハッシュを取得し複数人で保存する。
 
@@ -330,6 +403,10 @@ echo "--- DHCP forensic log ---" >> "$SEAL_FILE"
 find /var/log/kea -type f -name "kea-legal*" | sort | while read -r f; do
     sha256sum "$f" >> "$SEAL_FILE"
 done
+
+# Conntrack イベントログ (r1 から転送済み)
+echo "--- Conntrack NAT log ---" >> "$SEAL_FILE"
+grep "conntrack-nat" /var/log/syslog* 2>/dev/null | sha256sum >> "$SEAL_FILE"
 
 # NDP ダンプ (syslog 内)
 echo "--- Seal file hash ---" >> "$SEAL_FILE"
@@ -434,7 +511,7 @@ gcloud storage objects describe gs://bwai-compliance-logs/seal/log-seal-*.txt \
 # → 保持期限の日時が表示される
 ```
 
-## 11. 保存期間とローテーション
+## 12. 保存期間とローテーション
 
 | ログ種別 | ローカル保存 | GCE 保存 | GCS 保存 |
 |---|---|---|---|
@@ -442,6 +519,7 @@ gcloud storage objects describe gs://bwai-compliance-logs/seal/log-seal-*.txt \
 | DNS クエリログ | 30 日 | 90 日 | 180 日 |
 | DHCP forensic log | 30 日 | 90 日 | 180 日 |
 | NDP テーブルダンプ | 30 日 | 90 日 | 180 日 |
+| Conntrack NAT ログ (r1) | 30 日 | 90 日 | 180 日 |
 
 ローカルのローテーション:
 
@@ -456,7 +534,7 @@ gcloud storage objects describe gs://bwai-compliance-logs/seal/log-seal-*.txt \
 }
 ```
 
-## 12. 照会対応手順
+## 13. 照会対応手順
 
 ### nfdump による NetFlow 検索
 
@@ -504,6 +582,19 @@ grep "aa:bb:cc:dd:ee:ff" /var/log/syslog | grep "ndp-dump"
 grep "2001:db8::abcd" /var/log/syslog | grep "ndp-dump"
 ```
 
+### Conntrack NAT ログ検索 (r1 → Local Server 転送済み)
+
+```bash
+# 特定内部 IP の NAPT 変換マッピング
+grep "conntrack-nat" /var/log/syslog | grep "src=192.168.40.123"
+
+# 特定グローバルポートからの逆引き (外部からの照会対応)
+grep "conntrack-nat" /var/log/syslog | grep "dport=12345"
+
+# 特定時間帯の全 NAT 変換
+grep "conntrack-nat" /var/log/syslog | grep "1723286[4-5]"
+```
+
 ### 総合追跡 (IP → デバイス → 全通信)
 
 ```bash
@@ -518,3 +609,6 @@ grep "192.168.40.123\|<ipv6-address>" /var/log/syslog | grep "dns-forwarding"
 
 # Step 4: 両 IP の NetFlow を取得
 nfdump -R /var/log/nfcapd "src ip 192.168.40.123 or dst ip 192.168.40.123"
+
+# Step 5: NAPT 変換マッピングを取得 (グローバル IP:port との対応)
+grep "conntrack-nat" /var/log/syslog | grep "src=192.168.40.123"

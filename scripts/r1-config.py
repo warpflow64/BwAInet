@@ -72,8 +72,23 @@ commands = [
         "op": "set",
         "path": ["service", "dns", "forwarding", "name-server", "59.190.146.145"],
     },
+    # === Syslog (conntrack log forwarding to local server) ===
+    {
+        "op": "set",
+        "path": [
+            "system",
+            "syslog",
+            "host",
+            "192.168.11.2",
+            "facility",
+            "local2",
+            "level",
+            "info",
+        ],
+    },
     # === SSH hardening ===
     {"op": "set", "path": ["service", "ssh", "disable-password-authentication"]},
+    {"op": "set", "path": ["service", "ssh", "hostkey-algorithm", "ssh-ed25519"]},
     # === NAT destination (DNAT → main-pc 192.168.10.4) ===
     {
         "op": "set",

@@ -141,24 +141,26 @@ set nat source rule 100 translation address masquerade
 
 ### Destination NAT (ポートフォワーディング → メインPC 192.168.10.4)
 
-旧サーバー (.9) は VyOS に置き換わったため、SoftEther / iperf3 はメインPC (.4) で稼働させる。
+旧サーバー (.9) は VyOS に置き換わったため、wstunnel / iperf3 はメインPC (.4) で稼働させる。
 SSH と WireGuard は VyOS 自身が終端するため DNAT 不要 (WAN-LOCAL で許可)。
 
-#### SoftEther サーバー (メインPC 192.168.10.4)
+#### wstunnel サーバー (メインPC 192.168.10.4)
 
-自宅側は VPN の**受信側**であり、SoftEther サーバーを r1 配下のメインPC で稼働させる。会場側の SoftEther クライアント (Proxmox CT) がプロキシ CONNECT 経由で TCP 443 に接続し、L2 トンネルを確立する。詳細は [`venue-proxmox.md`](venue-proxmox.md) を参照。
+自宅側は VPN の**受信側**であり、wstunnel サーバーを r1 配下のメインPC で稼働させる。会場側の wstunnel クライアント (r3 VyOS 上の podman コンテナ) がプロキシ CONNECT 経由で TCP 443 に接続し、WireGuard UDP パケットを WebSocket (TLS) で中継する。詳細は [`venue-proxmox.md`](venue-proxmox.md) を参照。
 
-- TCP 80/443 → 192.168.10.4 に DNAT (下記ルール 20, 30)
-- プロキシ解除時は SoftEther 不使用 (WireGuard 直接接続)
+- TCP 443 → 192.168.10.4 に DNAT (下記ルール 30)
+- プロキシ解除時は wstunnel 不使用 (WireGuard 直接接続)
+
+wstunnel サーバーの起動コマンド:
+
+```bash
+wstunnel server --restrict-to 127.0.0.1:51820 wss://[::]:443
+```
+
+`--restrict-to` により、トンネル先を r1 の WireGuard (localhost:51820) に限定する。
 
 ```
-set nat destination rule 20 description 'SoftEther-HTTP'
-set nat destination rule 20 inbound-interface name pppoe0
-set nat destination rule 20 protocol tcp
-set nat destination rule 20 destination port 80
-set nat destination rule 20 translation address 192.168.10.4
-
-set nat destination rule 30 description 'SoftEther-HTTPS'
+set nat destination rule 30 description 'wstunnel-HTTPS'
 set nat destination rule 30 inbound-interface name pppoe0
 set nat destination rule 30 protocol tcp
 set nat destination rule 30 destination port 443
@@ -182,10 +184,10 @@ set nat destination rule 50 translation address 192.168.10.4
 IX3315 の `ip napt hairpinning` と同等。LAN 内から自宅のグローバル IP 宛にアクセスした場合、内部の DNAT 先に正しく転送されるようにする。
 
 ```
-set nat destination rule 110 description 'Hairpin-SoftEther-HTTP'
+set nat destination rule 110 description 'Hairpin-wstunnel-HTTPS'
 set nat destination rule 110 inbound-interface name br0
 set nat destination rule 110 protocol tcp
-set nat destination rule 110 destination port 80
+set nat destination rule 110 destination port 443
 set nat destination rule 110 destination address <pppoe0-address>
 set nat destination rule 110 translation address 192.168.10.4
 
@@ -197,6 +199,74 @@ set nat source rule 110 translation address masquerade
 # 他のヘアピンルールも同様のパターンで追加
 # PPPoE アドレスが動的なため、ヘアピン NAT は必要に応じて設定
 # または DNS で内部アドレスを返す split-horizon で回避
+```
+
+## Conntrack イベントログ (NAPT 変換記録)
+
+法執行機関からの照会対応として、masquerade による NAPT 変換のマッピングを conntrack イベントとして記録する。詳細は [`logging-compliance.md`](logging-compliance.md) を参照。
+
+### なぜ必要か
+
+会場側の NetFlow は NAT 前のクライアント IP を記録するが、法執行機関からの照会は「グローバル IP X.X.X.X のポート Y から Z 時刻に通信があった」という形式。masquerade の変換テーブル (内部 IP:port ↔ グローバル IP:port) を記録しないと、この紐付けができない。
+
+### conntrack イベントロガー
+
+`conntrack -E` で NEW/DESTROY イベントをリアルタイムに syslog へ出力する。対象は会場サブネットのみ (家族用 LAN 192.168.10.0/24 は除外)。
+
+#### スクリプト (`/config/scripts/conntrack-logger.sh`)
+
+```bash
+#!/bin/bash
+# Conntrack イベントログ: 会場サブネットの NAPT 変換マッピングを syslog に記録
+# 対象: 192.168.11.0/24 (mgmt), 192.168.30.0/24 (staff), 192.168.40.0/22 (user)
+# 除外: 192.168.10.0/24 (家族用 LAN)
+conntrack -E -e NEW,DESTROY -o timestamp 2>/dev/null | \
+    grep --line-buffered -E 'src=(192\.168\.(11|30|4[0-3])\.)' | \
+    logger -t conntrack-nat -p local2.info
+```
+
+#### systemd サービス (`/etc/systemd/system/conntrack-logger.service`)
+
+```ini
+[Unit]
+Description=Conntrack NAT Translation Logger
+After=network.target
+
+[Service]
+ExecStart=/config/scripts/conntrack-logger.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### 有効化
+
+```bash
+chmod +x /config/scripts/conntrack-logger.sh
+systemctl daemon-reload
+systemctl enable --now conntrack-logger.service
+```
+
+### 出力例
+
+```
+[1723286400.123456]    [NEW] tcp      6 120 SYN_SENT src=192.168.40.123 dst=93.184.216.34 sport=54321 dport=443 [UNREPLIED] src=93.184.216.34 dst=<pppoe0-ip> sport=443 dport=12345
+[1723286460.789012] [DESTROY] tcp      6 src=192.168.40.123 dst=93.184.216.34 sport=54321 dport=443 src=93.184.216.34 dst=<pppoe0-ip> sport=443 dport=12345
+```
+
+読み方:
+- original tuple: `src=192.168.40.123 sport=54321` → 内部クライアント
+- reply tuple: `dst=<pppoe0-ip> dport=12345` → NAT 後のグローバル IP:ポート
+- NEW → セッション確立、DESTROY → セッション終了
+
+### syslog 転送 (r1 → Local Server)
+
+conntrack ログを WireGuard 経由で会場の Local Server (192.168.11.2) に転送し、既存のログパイプラインに合流させる。
+
+```
+set system syslog host 192.168.11.2 facility local2 level info
 ```
 
 ## ファイアウォール
@@ -555,13 +625,7 @@ set nat source rule 130 translation address masquerade
 
 # Destination NAT (ポートフォワーディング → メインPC 192.168.10.4)
 # SSH → VyOS 自身 (WAN-LOCAL で許可), WireGuard → VyOS 自身 (WAN-LOCAL で許可)
-set nat destination rule 20 description 'SoftEther-HTTP'
-set nat destination rule 20 inbound-interface name pppoe0
-set nat destination rule 20 protocol tcp
-set nat destination rule 20 destination port 80
-set nat destination rule 20 translation address 192.168.10.4
-
-set nat destination rule 30 description 'SoftEther-HTTPS'
+set nat destination rule 30 description 'wstunnel-HTTPS'
 set nat destination rule 30 inbound-interface name pppoe0
 set nat destination rule 30 protocol tcp
 set nat destination rule 30 destination port 443
