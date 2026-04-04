@@ -426,6 +426,28 @@ set service ssh hostkey-algorithm ssh-ed25519
 
 WAN にも公開するため、ed25519 鍵認証のみに制限しパスワード認証を無効化する。listen-address を指定しないことで全インターフェースで受け付ける (WAN-LOCAL ファイアウォールで WAN 側も許可済み)。
 
+### 登録済み公開鍵 (authorized_keys)
+
+ユーザー `vyos` に登録されている SSH 公開鍵一覧:
+
+| キー名 | 種別 | 公開鍵 |
+|--------|------|--------|
+| `admin-P14sGen4` | ssh-ed25519 | `AAAAC3NzaC1lZDI1NTE5AAAAIB+qVyw/Zek2Mw81dOqJKHQKsG9bnZuFsJdsRWakenyj` |
+| `admin@DESKTOP-NKBDQ7N` | ssh-ed25519 | `AAAAC3NzaC1lZDI1NTE5AAAAICE+Sh+BGa5emrjg2WLm+KYxQZGUPcIoSSKVE8Fsrm16` |
+| `yuuki@uyuki234` | ssh-ed25519 | `AAAAC3NzaC1lZDI1NTE5AAAAILpwyh8IbeX+/UG8hSxKJSZSYUG21hBvUIxQoyI0AJuk` |
+| `uenohiroya@MacBook-Pro` | ssh-ed25519 | `AAAAC3NzaC1lZDI1NTE5AAAAILFoalIDw9/h9PPlB52T7j9jokmbT/F5iHQ/2O8frfYT` |
+| `GDG_Kwansai_2026_1` | ssh-ed25519 | `AAAAC3NzaC1lZDI1NTE5AAAAIK7+w42OTq5owt5qJ5AnvC5zUiGKjus7wFyI9kt97KAR` |
+| `GDG_Kwansai_2026_2` | ssh-ed25519 | `AAAAC3NzaC1lZDI1NTE5AAAAIDo0nQBmij/qT7E/Nuz9CNy41LZW6vzUl4vFSktH6R4d` |
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB+qVyw/Zek2Mw81dOqJKHQKsG9bnZuFsJdsRWakenyj admin-P14sGen4
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICE+Sh+BGa5emrjg2WLm+KYxQZGUPcIoSSKVE8Fsrm16 admin@DESKTOP-NKBDQ7N
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILpwyh8IbeX+/UG8hSxKJSZSYUG21hBvUIxQoyI0AJuk yuuki@uyuki234
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILFoalIDw9/h9PPlB52T7j9jokmbT/F5iHQ/2O8frfYT uenohiroya@MacBook-Pro
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7+w42OTq5owt5qJ5AnvC5zUiGKjus7wFyI9kt97KAR GDG_Kwansai_2026_1
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDo0nQBmij/qT7E/Nuz9CNy41LZW6vzUl4vFSktH6R4d GDG_Kwansai_2026_2
+```
+
 ## 移行手順
 
 ### 前提

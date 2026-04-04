@@ -31,10 +31,10 @@ RAM 目安: VyOS VM 4GB + SoftEther CT 512MB + ローカルサーバー CT 8GB +
 
 ### NIC 構成
 
-| NIC | チップ | 速度 | 接続 | 役割 |
-|-----|--------|------|------|------|
-| オンボード | Realtek RTL8111H | 1GbE | 内蔵 | **トランク** (→ PoE スイッチ) |
-| 外付け | USB 2.5GbE | 2.5GbE | USB 3.0 | **アップリンク** (→ blackbox) |
+| NIC | チップ | ドライバ | 速度 | IF 名 | 接続 | 役割 |
+|-----|--------|---------|------|-------|------|------|
+| オンボード | Realtek RTL8168H | r8169 | 1GbE | nic0 | PCIe (`0000:01:00.0`) | **トランク** (→ PoE スイッチ) |
+| 外付け | Realtek RTL8156B | r8152 | 2.5GbE | nic1 | USB 3.0 (`usb-0000:00:14.0-4`) | **アップリンク** (→ blackbox) |
 
 #### NIC 役割の割り当て理由
 
@@ -66,20 +66,20 @@ apt install r8168-dkms
 
 ```bash
 # /etc/udev/rules.d/70-persistent-net.rules
-SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="<USB NIC MAC>", NAME="enxusb0"
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="00:e0:4c:92:ee:41", NAME="enxusb0"
 ```
 
-推奨チップ: RTL8156B 系 (r8152 ドライバ) または AX88179A — いずれも Proxmox で安定動作。
+実機確認済み: RTL8156B (r8152 ドライバ, FW: rtl8156b-2 v3)。Proxmox 6.17 カーネルで認識済み。
 
 ## Proxmox 仮想ネットワーク設計
 
 ### ブリッジ構成
 
-| ブリッジ | 接続先 | 用途 |
-|---------|--------|------|
-| vmbr0 | USB NIC (アップリンク) | 会場上流 (blackbox) への接続 |
-| vmbr1 | (内部ブリッジ、物理 NIC なし) | SoftEther ↔ VyOS 間のトンネル経路 |
-| vmbr_trunk | オンボード NIC (Realtek) | VyOS → PoE スイッチ (VLAN トランク) |
+| ブリッジ | bridge-ports | 接続先 | 用途 |
+|---------|-------------|--------|------|
+| vmbr0 | nic1 | USB NIC (アップリンク) | 会場上流 (blackbox) への接続。DHCP でアドレス取得 |
+| vmbr1 | none | (内部ブリッジ、物理 NIC なし) | SoftEther ↔ VyOS 間のトンネル経路 |
+| vmbr_trunk | nic0 | オンボード NIC (Realtek) | VyOS → PoE スイッチ (VLAN トランク)。Proxmox 管理 IP (192.168.11.3/24) |
 
 ### ネットワークトポロジ
 
