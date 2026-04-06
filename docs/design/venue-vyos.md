@@ -301,6 +301,75 @@ set protocols bgp parameters distance global internal 200
 set protocols bgp parameters distance global local 200
 ```
 
+### WG peer 公開 IP の escape route
+
+r1-home から `default-originate` で `0.0.0.0/0` を受け取ると、何も対策しない状態では **WG 外殻パケット (outer dst = WG peer の公開 IP) が wg0 に吸われてループ・二重カプセル化** が発生する。r3 が維持している WG peer は 2 つあり、どちらも同じ問題の影響を受ける:
+
+| peer | 公開 IP | IP 性質 | 対策方法 |
+|---|---|---|---|
+| r1-home (wg0) | tukushityann.net → 動的 pppoe0 | ISP 由来で変動あり | tracker スクリプトで kernel 直叩き (後述) |
+| r2-gcp (wg1) | `34.97.197.104` | GCP 予約 static IP | VyOS 静的経路 + `dhcp-interface eth3` |
+
+#### r2-gcp (wg1) — 静的な /32 escape
+
+GCP 側の公開 IP は固定なので VyOS config 内で完結できる。next-hop には `dhcp-interface eth3` を使うことで、自宅検証環境 / venue 本番いずれでも eth3 の DHCP default GW が自動選択される。
+
+```
+set protocols static route 34.97.197.104/32 dhcp-interface eth3
+```
+
+投入前は `traceroute 34.97.197.104` が `via 10.255.0.1 dev wg0` (BGP default に吸収)、投入後は `via <DHCP GW> dev eth3` になる。これで wg1 の外殻パケットが wg0 の中にカプセル化される二重トンネル化が防げる。
+
+> **r2-gcp 側の対策も必須**: r3 は r1 から `default-originate` で受けた `0.0.0.0/0` を eBGP の経路再広告により **r2-gcp にも再広告する**。r2-gcp がこの BGP default (AD20) を受け入れると、GCP の static default (AD210) が負けて r2 の全トラフィックが wg2 → r3 に吸い込まれ、**r2 がインターネット到達不能・WG 応答パケット送信不能** となる。r2-gcp 側の対策として `DENY-DEFAULT` prefix-list (import フィルタ) を設定済み。詳細は [`gcp-integration.md`](gcp-integration.md) セクション 8 を参照。
+
+#### r1-home (wg0) — 動的追従の tracker
+
+r1-home の公開 IP は DDNS `tukushityann.net` で管理されており、ISP 再接続で変動する可能性がある。しかし VyOS の CLI/API validator は:
+- `interfaces wireguard <if> peer <name> address` に **FQDN を許可しない** (`ip-address` validator で拒否)
+- `protocols static route <prefix>` の宛先に **FQDN を許可しない**
+
+これは API 経由でも config.boot 直接編集でも同じ (commit 時に再検証される)。一方、kernel の `wg set endpoint <fqdn>:<port>` と `ip route replace` は FQDN/動的 IP に対応している。
+
+そこで **VyOS config の外に tracker スクリプトを置き、kernel 直叩きで管理する**構成とする。
+
+#### コンポーネント
+
+| 要素 | パス | 役割 |
+|---|---|---|
+| tracker 本体 | `/config/scripts/wg-r1-tracker.sh` | `tukushityann.net` (r1 の DDNS) を解決し、wg0 peer endpoint と `/32` escape route を最新 IP に追従 |
+| 定期実行 | VyOS task-scheduler `wg-r1-tracker` (1 分間隔) | r1 WAN IP 変更を自動追従 |
+| 起動時実行 | `/config/scripts/vyos-postconfig-bootup.script` | boot 直後に一度実行し、BGP default が立つ前に `/32` を設置 |
+| last-IP 状態 | `/var/run/wg-r1-tracker.last-ip` | 前回解決 IP を記録 (変更検知用、tmpfs なので再起動で消える = 起動時に必ず更新走る) |
+
+#### 投入コマンド
+
+```
+# task-scheduler 登録 (毎分実行)
+set system task-scheduler task wg-r1-tracker interval 1m
+set system task-scheduler task wg-r1-tracker executable path /config/scripts/wg-r1-tracker.sh
+```
+
+スクリプト本体は `scripts/wg-r1-tracker.sh` としてリポジトリ管理。`/config/scripts/vyos-postconfig-bootup.script` には以下を追記する:
+
+```bash
+# --- r1-home WAN IP tracker ---
+# BGP default-originate 適用後、WG 外殻パケットが wg0 にループで吸われるのを防ぐため、
+# 起動直後に tukushityann.net を解決して r1 公開 IP への /32 escape route を設置する。
+# 以降は task-scheduler (wg-r1-tracker, 1m) が継続追従する。
+/config/scripts/wg-r1-tracker.sh || true
+```
+
+#### VyOS config に残る placeholder
+
+`interfaces wireguard wg0 peer r1-home address <last-known-ip>` は **last-known-good な IP** をそのまま残しておく。起動直後 (tracker が走る前) の一時的なフォールバックとして機能する。IP 変更時には tracker がカーネルレベルで `wg set endpoint` を上書きするため、config 側の値は同期されない点に注意 (設計上許容)。
+
+#### 運用上の注意
+
+- tracker が停止すると r1 IP 変更時に WG が再接続不能になる。`systemctl status cron` と `journalctl -t wg-r1-tracker` を監視対象にする
+- VyOS 側で `commit` が wg0 を触ると (例: allowed-ips の変更など) tracker 設定した endpoint が config の placeholder に戻される可能性がある。次の cron 発火 (最大 1 分) で復旧する
+- `tukushityann.net` の DDNS 更新が停止した場合は tracker も追従できないため、DDNS 自体の監視も必要
+- r1 IP を静的に変更したい場合は **config の placeholder と DDNS 両方**を更新すること
+
 ## 7. ファイアウォール (ACL)
 
 ### 設計方針

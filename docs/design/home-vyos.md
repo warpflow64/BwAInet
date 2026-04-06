@@ -139,7 +139,18 @@ set nat source rule 100 source address 192.168.10.0/24
 set nat source rule 100 translation address masquerade
 ```
 
-### Destination NAT (ポートフォワーディング → メインPC 192.168.10.4)
+��場サブネット (192.168.11/30/40) のマ��カレードは全量設定の方に記載 (rule 110–130)。
+
+加えて、**WG トンネルアド���ス (10.255.0.0/24)** ��マスカレードも必要。r3 ルーター自身が発するトラフィック (DNS, NTP, ping 等) は BGP default で wg0 経由 r1 に届くが、source が 10.255.0.2 (wg0 アドレス) となり、他のルールでカバーされない。SNAT されないまま pppoe0 に出るとプライベート src IP のため ISP で drop される。
+
+```
+set nat source rule 150 outbound-interface name pppoe0
+set nat source rule 150 source address 10.255.0.0/24
+set nat source rule 150 translation address masquerade
+set nat source rule 150 description 'WG tunnel addresses masquerade'
+```
+
+### Destination NAT (ポートフォワーデ��ング → メインPC 192.168.10.4)
 
 旧サーバー (.9) は VyOS に置き換わったため、wstunnel / iperf3 はメインPC (.4) で稼働させる。
 SSH と WireGuard は VyOS 自身が終端するため DNAT 不要 (WAN-LOCAL で許可)。
@@ -411,6 +422,8 @@ set protocols bgp neighbor 10.255.0.2 remote-as 65001
 set protocols bgp neighbor 10.255.0.2 description 'venue-r3'
 set protocols bgp neighbor 10.255.0.2 address-family ipv4-unicast
 set protocols bgp neighbor 10.255.0.2 address-family ipv4-unicast route-map import WG-IN
+# r3 (venue) に default route を広告 (venue ユーザートラフィックを自宅 pppoe0 経由で抜くため)
+set protocols bgp neighbor 10.255.0.2 address-family ipv4-unicast default-originate
 
 # --- r2-gcp (GCP トランジット) ---
 set protocols bgp neighbor 10.255.1.2 remote-as 64512
@@ -433,6 +446,21 @@ set policy route-map GCP-IN rule 10 set local-preference 50
 ```
 
 WireGuard (wg0) ダウン時は r3 との BGP セッションも落ち、local-pref 200 の経路が消失。自動的に r2-gcp 経由 (local-pref 50) にフォールバックする。
+
+### default-originate について
+
+`default-originate` により r1-home は venue-r3 に対して BGP で `0.0.0.0/0` を広告する。r3 側はこれを AD=20 でカーネルに投入し、DHCP 由来の default route (AD=210) より優先される。これによって venue のユーザートラフィックが wg0 経由で r1-home に到達し、pppoe0 から Internet へ抜ける設計が成立する。
+
+**注意点 (r3 側のループ防止)**: r3 の wg0 peer endpoint は r1-home の公開 IP (pppoe0 アドレス) であり、`allowed-ips 0.0.0.0/0` を設定しているため、r3 に BGP default が刺さった瞬間に WG 外殻パケット (outer dst = r1 公開 IP) まで wg0 に吸われてループする危険がある。対策は r3 側の [venue-vyos.md](venue-vyos.md) 参照 (tracker スクリプトで `/32` escape route を kernel 直叩きで管理)。
+
+**r1 側の静的経路クリーンアップ**: default-originate 投入と同時に、旧設計の残骸である以下の static route は削除済み。残っていると BGP (AD=20) より static (AD=1) が優先され、venue 戻りが wg1 (GCP) に誤配送されて `host unreachable` を吐く。
+
+```
+# 削除済み (旧 GCP 経由 venue 到達想定の残骸)
+# set protocols static route 192.168.11.0/24
+# set protocols static route 192.168.30.0/24 next-hop 10.255.1.2
+# set protocols static route 192.168.40.0/22 next-hop 10.255.1.2
+```
 
 ## IPv6 プレフィックス委任 (会場向け)
 
@@ -629,6 +657,12 @@ set nat source rule 130 outbound-interface name pppoe0
 set nat source rule 130 source address 192.168.40.0/22
 set nat source rule 130 translation address masquerade
 
+# WG トンネルアドレスもマスカレード (r3 ルーター自身の通信用)
+set nat source rule 150 outbound-interface name pppoe0
+set nat source rule 150 source address 10.255.0.0/24
+set nat source rule 150 translation address masquerade
+set nat source rule 150 description 'WG tunnel addresses masquerade'
+
 # Destination NAT (ポートフォワーディング → メインPC 192.168.10.4)
 # SSH → VyOS 自身 (WAN-LOCAL で許可), WireGuard → VyOS 自身 (WAN-LOCAL で許可)
 set nat destination rule 30 description 'wstunnel-HTTPS'
@@ -754,19 +788,21 @@ set service ntp server ntp.jst.mfeed.ad.jp
 # === ルーティング ===
 
 # デフォルトルートは pppoe0 から自動取得
-# 会場サブネットへの static route
-set protocols static route 192.168.11.0/24 next-hop 10.255.0.2
-set protocols static route 192.168.30.0/24 next-hop 10.255.0.2
-set protocols static route 192.168.40.0/22 next-hop 10.255.0.2
+# 会場サブネットは BGP で r3 (wg0) から学習 (旧 static route は廃止)
+# 旧構成の残骸 (誤配送の原因) は投入しないこと:
+#   set protocols static route 192.168.11.0/24
+#   set protocols static route 192.168.30.0/24 next-hop 10.255.1.2
+#   set protocols static route 192.168.40.0/22 next-hop 10.255.1.2
 
 # BGP (AS65002)
 set protocols bgp system-as 65002
 
-# r3 (WireGuard 直接)
+# r3 (WireGuard 直接) — venue に default route を広告
 set protocols bgp neighbor 10.255.0.2 remote-as 65001
 set protocols bgp neighbor 10.255.0.2 description 'venue-r3'
 set protocols bgp neighbor 10.255.0.2 address-family ipv4-unicast
 set protocols bgp neighbor 10.255.0.2 address-family ipv4-unicast route-map import WG-IN
+set protocols bgp neighbor 10.255.0.2 address-family ipv4-unicast default-originate
 
 # r2-gcp (GCP トランジット)
 set protocols bgp neighbor 10.255.1.2 remote-as 64512

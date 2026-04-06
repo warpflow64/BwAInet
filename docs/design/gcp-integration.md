@@ -354,6 +354,34 @@ proxy wg1 {
 
 ### 8. r2-gcp 設定 (GCE VyOS)
 
+#### BGP import フィルタ (DENY-DEFAULT)
+
+r1-home が r3-venue に `default-originate` で `0.0.0.0/0` を広告しており、r3 が eBGP の経路再広告でこの default を r2-gcp にも転送する。r2-gcp が BGP default (AD20) を受け入れると GCP の static default (`0.0.0.0/0 via 10.174.0.1, eth0`, AD210) が負け、r2 の全アウトバウンドトラフィックが wg2 → r3 に吸い込まれる。
+
+r2-gcp は GCP VPC に直接インターネット接続を持つため、**BGP から default route を受け取る必要がない**。全 neighbor の import で 0.0.0.0/0 を拒否する:
+
+```
+# === Default route import フィルタ ===
+set policy prefix-list DENY-DEFAULT rule 10 action deny
+set policy prefix-list DENY-DEFAULT rule 10 prefix 0.0.0.0/0
+
+set policy prefix-list DENY-DEFAULT rule 20 action permit
+set policy prefix-list DENY-DEFAULT rule 20 prefix 0.0.0.0/0 le 32
+
+set protocols bgp neighbor 10.255.1.1 address-family ipv4-unicast prefix-list import DENY-DEFAULT
+set protocols bgp neighbor 10.255.2.1 address-family ipv4-unicast prefix-list import DENY-DEFAULT
+```
+
+#### sshd privilege separation ディレクトリ (起動時修正)
+
+VyOS は `ssh.service` (systemd) を disabled にし、独自に sshd を直接起動する。しかし、systemd の `ExecStartPre` で作成される `/run/sshd` ディレクトリが省略されるため、**VM 再起動後に SSH 接続の子プロセスが `Missing privilege separation directory: /run/sshd` で即死する**。親プロセスは Listen 状態で正常に見えるが、全ての新規接続が `Connection reset` になる。
+
+`/config/scripts/vyos-postconfig-bootup.script` に以下を追記して対策する:
+
+```bash
+mkdir -p /run/sshd
+```
+
 #### IPv6 ルーティング
 
 GCP /64 を WireGuard 経由で r3 に転送する。
