@@ -120,22 +120,35 @@
 
 ### モード選定
 
-- **既定**: **Rapid PVST+** (`rapid-pvst`) — Cisco/FS/一部 HPE でサポート。VLAN ごとにインスタンスを持つので収束が早く、VLAN トラフィック分散にも使える
-- **ベンダー混在時**: **MSTP** を検討 — Aruba CX / Juniper / MikroTik と混ぜる場合はこちら。MST インスタンスに VLAN 11/30/40 をまとめて載せる
-- **同一ベンダーのみ** (例: Cisco ISR + Cisco Catalyst) なら PVST+/RPVST+ 一択
+- **統一規格**: **MSTP (IEEE 802.1s)** — Cisco / FS / Allied Telesis 全ベンダーが対応する IEEE 標準規格
+- Cisco / FS: `spanning-tree mode mst`
+- Allied Telesis (AlliedWare Plus): `spanning-tree mode mstp`
+- **RPVST+ / PVST+ は使用禁止** — Cisco 独自プロトコルであり、Allied Telesis が BPDU を認識しないためベンダー混在環境でループ検知が破綻する
+
+### MST リージョン設定
+
+全スイッチで以下のパラメータを **完全一致** させること。1 台でも不一致があると別リージョン扱いになり、CIST boundary として動作し意図しない STP トポロジになる。
+
+| パラメータ | 値 | 備考 |
+|-----------|-----|------|
+| リージョン名 | `BWAI` | 大文字小文字区別あり |
+| リビジョン番号 | `1` | 変更時は全台同時更新 |
+| VLAN マッピング | 全 VLAN → IST (instance 0) | デフォルトのまま |
+
+VLAN が 3 つ (11/30/40) のみ、スイッチ台数も少ないため MST インスタンスを分割する意味はない。全 VLAN を IST (instance 0) に載せることで実質 RSTP (802.1w) 相当の単一ツリーで動作する。
 
 ### ルートブリッジ
 
 - **プライマリルート**: sw01 (FS、集約スイッチ)
 - **セカンダリルート**: sw02 (Cisco ISR 1100)
-- priority は 4096 単位で設定 (sw01=4096, sw02=8192, その他=32768 デフォルト)
+- priority は MST instance 0 に対して設定 (sw01=4096, sw02=8192, その他=32768 デフォルト)
 
 ### ポート別 STP 設定
 
-| ポートタイプ | portfast | BPDU guard | 備考 |
-|--------------|----------|-----------|------|
+| ポートタイプ | edge (portfast) | BPDU guard | 備考 |
+|--------------|-----------------|-----------|------|
 | T1 (upstream trunk) | no | no | BPDU 疎通を維持 |
-| T2 (AP trunk) | portfast trunk | yes | AP は BPDU 送出しない |
+| T2 (AP trunk) | edge trunk | yes | AP は BPDU 送出しない |
 | T3 (endpoint access) | yes | yes | 端末は BPDU 送出しない |
 | T4 (mgmt access) | yes | yes | 同上 |
 | T5 (shutdown) | — | — | 無効化 |
@@ -153,7 +166,7 @@
 | Trunk ポート (T1/T2) | `switchport mode trunk` `switchport trunk allowed vlan 11,30,40` `switchport trunk native vlan 11` | `interface 1/1/1` `no routing` `vlan trunk allowed 11,30,40` `vlan trunk native 11` | `set interfaces ge-0/0/0 unit 0 family ethernet-switching interface-mode trunk vlan members [mgmt staff user]` `set interfaces ge-0/0/0 native-vlan-id 11` | `/interface bridge port add bridge=bridge1 interface=ether1 pvid=11 frame-types=admit-all` + `/interface bridge vlan add bridge=bridge1 tagged=ether1 vlan-ids=11,30,40` |
 | 管理 SVI (VLAN 11 IP) | `interface Vlan11` `ip address 192.168.11.x 255.255.255.0` | `interface vlan 11` `ip address 192.168.11.x/24` | `set interfaces irb unit 11 family inet address 192.168.11.x/24` `set vlans mgmt l3-interface irb.11` | `/interface vlan add interface=bridge1 name=vlan11 vlan-id=11` + `/ip address add address=192.168.11.x/24 interface=vlan11` |
 | デフォルト GW | `ip default-gateway 192.168.11.1` | `ip route 0.0.0.0/0 192.168.11.1` | `set routing-options static route 0.0.0.0/0 next-hop 192.168.11.1` | `/ip route add dst-address=0.0.0.0/0 gateway=192.168.11.1` |
-| STP (RPVST+) | `spanning-tree mode rapid-pvst` | `spanning-tree mode rapid-pvst` (CX は機種限定) | Junos 既定 RSTP、`set protocols rstp` | `/interface bridge set bridge1 protocol-mode=rstp` |
+| STP (MSTP) | `spanning-tree mode mst` | `spanning-tree mode mstp` | `set protocols mstp` | `/interface bridge set bridge1 protocol-mode=mstp` |
 | STP portfast/edge | `spanning-tree portfast` | `spanning-tree port-type admin-edge` | (Junos は `edge`) | `/interface bridge port set edge=yes` |
 | BPDU guard | `spanning-tree bpduguard enable` | `spanning-tree bpdu-guard` | `set protocols rstp bpdu-block-on-edge` | `/interface bridge port set bpdu-guard=yes` |
 | LLDP 有効化 | `lldp run` | `lldp` | `set protocols lldp interface all` | `/interface bridge port set auto-isolate=no` + LLDP は別設定 |
@@ -164,7 +177,7 @@
 - **Aruba CX の native VLAN**: デフォルトで `vlan trunk native 1`。明示的に `vlan trunk native 11` を設定しないと VLAN 1 untagged になる罠あり
 - **Junos ELS の `interface-mode` vs 旧 `port-mode`**: ELS (EX2300/3400 以降) は `interface-mode`、旧機種は `port-mode`。設定前にバージョン確認
 - **MikroTik は bridge VLAN filtering** を `/interface bridge set bridge1 vlan-filtering=yes` で有効化しないと VLAN が機能しない。忘れやすい
-- **PVST+/RPVST+ の IEEE 互換**: Cisco PVST+ は独自、RPVST+ は IEEE 802.1w 互換。ベンダー混在時は **MSTP が最も安全**
+- **STP モード統一**: 全スイッチで MSTP (IEEE 802.1s) を使用する。Cisco 独自の PVST+/RPVST+ は Allied Telesis が非対応のため使用禁止。Cisco/FS は `spanning-tree mode mst`、Allied Telesis は `spanning-tree mode mstp` で設定。MST リージョン名 `BWAI`・リビジョン `1` を全台で一致させること
 
 ---
 
@@ -193,7 +206,73 @@
 
 ---
 
-## 7. 構築・投入チェックリスト (全スイッチ共通)
+## 7. IPv6 マルチキャスト対策 (全スイッチ共通)
+
+### 背景
+
+IPv6 では Neighbor Discovery (ND) が多数のマルチキャストグループを生成する。端末ごとに Solicited-Node マルチキャストアドレスが作られ、DAD (重複アドレス検出) でも個別のマルチキャストグループが使用される。端末 1 台あたり IPv6 アドレスを約 3 個保持するため、VLAN 40 (user, /22, 最大 1000 台) では **最大 3000 マルチキャストグループ** が生成される可能性がある。一般的なスイッチの L2MC テーブルは 1000〜4096 エントリであり、**テーブル枯渇により RA が端末に届かなくなる半死状態** が発生しうる (JANOG56 での実例あり)。
+
+Wi-Fi 環境ではマルチキャストがブロードキャスト扱いとなり最低レートで全端末に送信されるため、パフォーマンス上も対策が必須。
+
+### 7.1 MLD Snooping
+
+IPv6 マルチキャストの L2 フラッディングを制限する。IPv4 の IGMP Snooping に相当。**全スイッチで有効化必須**。
+
+| 項目 | 値 |
+|------|-----|
+| MLD Snooping | グローバル有効化 + VLAN 30, 40 で有効化 |
+| MLD Querier | r3-vyos 側で設定不可のため、スイッチ側で Querier を有効化するか、VyOS が周期的に送出する RA/MLD Report で代替 |
+| VLAN 11 (mgmt) | 端末数が少ないため MLD Snooping は任意 |
+
+**効果**: DAD の Solicited-Node マルチキャストが全ポートにフラッディングされるのを防止し、L2MC テーブルの消費を該当ポートのみに限定する。
+
+### 7.2 RA Guard
+
+端末ポート (T2/T3) からの不正な Router Advertisement (ICMPv6 type 134) を遮断する。悪意のある端末や設定ミスの端末が RA を送出すると、セグメント内の全端末のデフォルトルータが書き換わり **大規模障害** となる。
+
+| ポートタイプ | RA Guard 設定 |
+|---|---|
+| T1 (upstream trunk) | `device-role router` または未適用 (正規ルーターからの RA を許可) |
+| T2 (AP trunk) | `device-role host` (AP および AP 配下の端末からの RA を遮断) |
+| T3 (endpoint access) | `device-role host` (端末からの RA を遮断) |
+| T4 (mgmt access) | `device-role host` |
+| T5 (shutdown) | — (ポート無効化済み) |
+
+**RA Guard が未対応の機種**: IPv6 ACL で ICMPv6 type 134 (RA) を access/AP ポートで drop するフィルタで代替する。
+
+### 7.3 マルチキャスト→ユニキャスト変換 (Wi-Fi)
+
+Wi-Fi ではマルチキャストフレームがブロードキャスト扱いとなり、最低データレート (1Mbps 等) で全端末に送信される。WLC 3504 または AP (FlexConnect) で **マルチキャスト→ユニキャスト変換 (Multicast-to-Unicast)** を有効化し、RA 等の重要なマルチキャストを各端末宛のユニキャストに変換する。
+
+- **Cisco WLC 3504**: `Wireless > Multicast` で `Enable Global Multicast` + `Enable Multicast Direct` を有効化
+- **FlexConnect ローカルスイッチング時**: AP 側で `multicast-to-unicast` を有効化 (WLC の FlexConnect Group 設定)
+
+### 7.4 マルチベンダー実装コマンド対比 (IPv6 マルチキャスト)
+
+| 操作 | Cisco IOS / IOS-XE (ESM) / FS (Cisco-like) | HPE Aruba CX | Juniper Junos (ELS) | MikroTik RouterOS |
+|------|----------------------------------------------|--------------|---------------------|-------------------|
+| MLD Snooping 有効化 (グローバル) | `ipv6 mld snooping` (Cisco) / `ipv6 mld-snooping enable` (FS) | デフォルト有効 (AOS-CX 10.16+) | `set protocols mld-snooping vlan <vlan>` | `/interface bridge set <bridge> igmp-snooping=yes` (IGMP/MLD 共通) |
+| MLD Snooping 有効化 (VLAN) | `ipv6 mld snooping vlan <id>` (Cisco) / `ipv6 mld-snooping vlan <id>` (FS) | `vlan <id>` → `ipv6 mld snooping enable` | VLAN 名で指定 | bridge 単位で一括 |
+| RA Guard ポリシー定義 | `ipv6 nd raguard policy <name>` → `device-role host` | `ipv6 nd-snooping ra-guard policy <name>` (ND snooping 前提) | `set forwarding-options access-security router-advertisement-guard` | bridge filter で ICMPv6 type 134 を drop |
+| RA Guard 適用 | `ipv6 nd raguard attach-policy <name>` | `nd-snooping ra-guard` (IF 配下) | `interface <if> mark-interface block` | `/ipv6 firewall filter` |
+| Storm Control (マルチキャスト) | `storm-control multicast level <pps>` (Cisco) / `storm-control multicast <threshold>` (FS) | `storm-control <if> multicast level <pps>` | `set interfaces <if> unit 0 family ethernet-switching storm-control` | `/interface bridge port set storm-rate` |
+
+**注意点**:
+
+- **FS (FSOS)**: MLD Snooping コマンドはハイフン区切り (`mld-snooping`) で Cisco のスペース区切り (`mld snooping`) と異なる。RA Guard は機種・バージョンにより未対応の可能性あり — その場合は IPv6 ACL で代替
+- **Cisco ISR 1100 (ESM)**: ESM switchport での MLD Snooping 対応は文書上不明確 — **実機で `ipv6 mld snooping ?` を投入して確認すること**。WAN 側 EVC + bridge-domain では IP マルチキャストが非サポートと明記されており、MLD Snooping が正常動作しない可能性がある
+- **MikroTik**: IGMP/MLD Snooping は共通設定。RA Guard はソフトウェア処理 (CPU) のため HW オフロード環境 (CRS) では制限あり
+- **HPE Aruba CX**: RA Guard は ND Snooping のグローバル有効化が前提
+
+### 7.5 L2MC テーブル監視
+
+IPv6 環境では、L2 マルチキャストテーブルの使用率を監視することが重要。IPv4 での DHCP プール使用率や NAT テーブル使用率の監視に相当する。
+
+- **確認コマンド例**: `show mac address-table multicast count` (Cisco/FS)、`show ipv6 mld snooping groups` (グループ数の把握)
+- **SNMP 監視**: スイッチの L2MC テーブル使用率を SNMP Exporter 経由で Grafana に追加し、閾値アラートを設定
+- **閾値目安**: テーブル容量の 70% で警告、90% で緊急 (機種ごとの最大エントリ数はデータシート参照)
+
+## 8. 構築・投入チェックリスト (全スイッチ共通)
 
 - [ ] VLAN 11 / 30 / 40 を作成し、名称を揃えた (`mgmt` / `staff` / `user`)
 - [ ] VLAN 11 SVI に 192.168.11.x/24 を割り当てた (x は [`mgmt-vlan-address.md`](./mgmt-vlan-address.md) 参照)
@@ -204,10 +283,15 @@
 - [ ] 未使用ポート (T5) を shutdown した
 - [ ] STP モードを rapid-pvst または mstp に設定した
 - [ ] LLDP を有効化した (ベンダー横断トポロジ確認のため)
+- [ ] MLD Snooping をグローバル + VLAN 30/40 で有効化した (§7.1)
+- [ ] RA Guard を T2/T3/T4 ポートに適用した、または IPv6 ACL で RA (ICMPv6 type 134) を drop 設定した (§7.2)
+- [ ] Storm control でマルチキャストを上限 1〜5% に設定した (T3 ポート)
+- [ ] L2MC テーブルの現在使用数を確認し、容量に余裕があることを確認した (§7.5)
 - [ ] 自宅環境で r3-vyos 経由で SSH ログインできることを確認した
 - [ ] 自宅環境で AP / 配信 PC / 来場者端末エミュレーションで DHCP リースが取得できることを確認した
+- [ ] 自宅環境で IPv6 RA が端末に正常に届くことを確認した (SLAAC アドレス取得)
 
-## 8. 会場搬入時の差分作業
+## 9. 会場搬入時の差分作業
 
 会場搬入後、VyOS (r3) が起動して BGP が上がったら、各スイッチは特に設定変更不要 (デフォルト GW `192.168.11.1` はそのまま)。
 

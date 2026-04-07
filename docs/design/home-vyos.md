@@ -392,14 +392,19 @@ set interfaces wireguard wg1 private-key <r1-private-key>
 set interfaces wireguard wg1 mtu 1380
 
 set interfaces wireguard wg1 peer r2-gcp public-key <r2-public-key>
-set interfaces wireguard wg1 peer r2-gcp address 34.97.94.203
+set interfaces wireguard wg1 peer r2-gcp address 34.97.197.104
 set interfaces wireguard wg1 peer r2-gcp port 51820
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 10.255.1.2/32
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 10.255.2.0/30
+set interfaces wireguard wg1 peer r2-gcp allowed-ips 192.168.11.0/24
+set interfaces wireguard wg1 peer r2-gcp allowed-ips 192.168.30.0/24
+set interfaces wireguard wg1 peer r2-gcp allowed-ips 192.168.40.0/22
 set interfaces wireguard wg1 peer r2-gcp persistent-keepalive 25
 
 set firewall options interface wg1 adjust-mss clamp-mss-to-pmtu
 ```
+
+> **注**: r2-gcp peer に会場プレフィックスを許可しているのは、r1↔r3 直結断時に r2-gcp 経由で会場トラフィックを迂回受信するため。
 
 ## BGP (AS65002)
 
@@ -466,43 +471,54 @@ WireGuard (wg0) ダウン時は r3 との BGP セッションも落ち、local-p
 
 OPTAGE から取得した DHCPv6-PD /64 を丸ごと会場 (r3) に転送する。自宅 LAN には割り当てない。
 
-### 方式: VyOS dhcpv6-options pd でダミーインターフェースに割り当て + static route
+### 方式: VyOS dhcpv6-options pd でダミーインターフェースに割り当て + 自動転送スクリプト
 
 ```
-# DHCPv6-PD で /64 を取得し、ダミーインターフェースに割り当てて経路を生成
-set interfaces dummy dum0 address 0.0.0.0/32
-set interfaces pppoe pppoe0 dhcpv6-options pd 0 interface dum0 sla-id 0 sla-len 0
+# DHCPv6-PD で /64 を取得し、ダミーインターフェースに割り当て
+set interfaces dummy dum0
+set interfaces pppoe pppoe0 dhcpv6-options pd 0 interface dum0 sla-id 0
 
-# 取得した /64 を wg0 経由で会場へ転送
-# ※ 実際のプレフィックスは動的に変わるため、dhclient-script hook で route を設定
+# 自動転送スクリプトを 1 分間隔で実行
+set system task-scheduler task pd-update interval 1m
+set system task-scheduler task pd-update executable path /config/scripts/pd-update-venue.sh
 ```
 
-### dhclient-script hook による動的ルーティング
+### プレフィックス変更自動追従 (`pd-update-venue.sh`)
 
-DHCPv6-PD のプレフィックスは ISP 側で変わる可能性がある。VyOS の dhclient exit hook で、取得したプレフィックスを wg0 の next-hop に向ける。
+DHCPv6-PD のプレフィックスは PPPoE 再接続や ISP 側メンテナンスで変わる可能性がある。VyOS の DHCPv6 クライアント (wide-dhcpv6 / dhcp6c) はスクリプトにプレフィックス情報を渡さないため、dhclient hook 方式は使えない。代わりに **task-scheduler (cron) で 1 分間隔監視** する。
 
-```bash
-#!/bin/bash
-# /etc/dhcp/dhclient-exit-hooks.d/pd-route-to-venue
-# DHCPv6-PD プレフィックス取得時に会場向け static route を設定
+**スクリプト**: [`scripts/pd-update-venue.sh`](../../scripts/pd-update-venue.sh)
+**配置先**: `/config/scripts/pd-update-venue.sh` (r1)
 
-if [ "$reason" = "BOUND6" ] || [ "$reason" = "REBIND6" ]; then
-  if [ -n "$new_ip6_prefix" ]; then
-    # 既存ルートを削除してから再設定
-    ip -6 route del ${new_ip6_prefix} dev wg0 2>/dev/null
-    ip -6 route add ${new_ip6_prefix} dev wg0
-  fi
-fi
-```
+動作フロー:
+
+1. dum0 の IPv6 グローバルアドレスから現在の /64 プレフィックスを取得
+2. `/tmp/pd_current_prefix` に保存した前回のプレフィックスと比較
+3. **変更あり**: r1 の IPv6 ルートを wg0 経由に更新 → r3 の VyOS API で IPv6 設定を全更新
+4. **変更なし**: wg0 ルートが消えていないか確認し、消えていれば再追加 (自己修復)
+
+r3 への更新内容:
+
+- `interfaces ethernet eth2 vif 30/40 address` — IPv6 アドレス
+- `service router-advert` — RA プレフィックス、RDNSS
+- `service dhcpv6-server` — DHCPv6 アドレスレンジ
+
+**制約**:
+
+- プレフィックス変更から r3 反映まで最大 1 分のラグがある (IPv4 は影響なし)
+- SLAAC クライアントは新プレフィックスの RA 受信後に新アドレスを取得する (旧アドレスは preferred-lifetime 満了まで残る)
+- `/tmp/pd_current_prefix` は再起動で消えるため、起動後の初回実行時は必ずフル更新が走る
 
 ### 会場側 (r3) の RA 配信
 
-r3 が受け取った /64 を VLAN 30/40 で RA 広告する。r1 側では RA を配信しない。
+r3 が受け取った /64 を VLAN 30/40 で RA 広告する。r1 側では RA を配信しない。r3 の IPv6 設定は `pd-update-venue.sh` が自動投入するため手動設定は不要。
 
 ```
-# r3 側 (参考)
-set service router-advert interface eth2.30 prefix <delegated-prefix>::/64
-set service router-advert interface eth2.40 prefix <delegated-prefix>::/64
+# r3 側 (pd-update-venue.sh が投入する設定の例)
+set interfaces ethernet eth2 vif 30 address 2001:ce8:180:5a79::1/64
+set interfaces ethernet eth2 vif 40 address 2001:ce8:180:5a79::2/64
+set service router-advert interface eth2.30 prefix 2001:ce8:180:5a79::/64
+set service router-advert interface eth2.40 prefix 2001:ce8:180:5a79::/64
 ```
 
 ## HTTPS API
@@ -629,10 +645,13 @@ set interfaces wireguard wg1 port 51821
 set interfaces wireguard wg1 private-key <r1-private-key>
 set interfaces wireguard wg1 mtu 1380
 set interfaces wireguard wg1 peer r2-gcp public-key <r2-public-key>
-set interfaces wireguard wg1 peer r2-gcp address 34.97.94.203
+set interfaces wireguard wg1 peer r2-gcp address 34.97.197.104
 set interfaces wireguard wg1 peer r2-gcp port 51820
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 10.255.1.2/32
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 10.255.2.0/30
+set interfaces wireguard wg1 peer r2-gcp allowed-ips 192.168.11.0/24
+set interfaces wireguard wg1 peer r2-gcp allowed-ips 192.168.30.0/24
+set interfaces wireguard wg1 peer r2-gcp allowed-ips 192.168.40.0/22
 set interfaces wireguard wg1 peer r2-gcp persistent-keepalive 25
 
 # MSS Clamping (wg0, wg1)

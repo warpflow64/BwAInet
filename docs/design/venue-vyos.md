@@ -94,7 +94,7 @@ set interfaces wireguard wg1 peer r2-gcp public-key <r2-public-key>
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 10.255.2.2/32
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 10.255.1.0/30
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 192.168.10.0/24
-set interfaces wireguard wg1 peer r2-gcp address 34.97.94.203
+set interfaces wireguard wg1 peer r2-gcp address 34.97.197.104
 set interfaces wireguard wg1 peer r2-gcp port 51821
 set interfaces wireguard wg1 peer r2-gcp persistent-keepalive 25
 ```
@@ -204,33 +204,94 @@ set service router-advert interface eth2.30 prefix <delegated-prefix>::/64 auton
 set service router-advert interface eth2.30 managed-flag true
 set service router-advert interface eth2.30 other-config-flag true
 set service router-advert interface eth2.30 name-server <prefix>::1
+set service router-advert interface eth2.30 interval max 60
+set service router-advert interface eth2.30 interval min 20
 
 # VLAN 40
 set service router-advert interface eth2.40 prefix <delegated-prefix>::/64 autonomous-flag true
 set service router-advert interface eth2.40 managed-flag true
 set service router-advert interface eth2.40 other-config-flag true
 set service router-advert interface eth2.40 name-server <prefix>::1
+set service router-advert interface eth2.40 interval max 60
+set service router-advert interface eth2.40 interval min 20
+```
+
+### RA マルチキャスト対策
+
+大規模 Wi-Fi 環境では RA のマルチキャスト送信が L2MC テーブル枯渇やエアタイム浪費の原因となる (JANOG56 での実例あり)。以下の対策を適用する。
+
+#### RA 送信間隔の調整
+
+デフォルトの RA 送信間隔 (200〜600 秒) ではマルチキャスト RA が頻繁に発生するため不要に短くしないこと。上記設定では max=60 秒、min=20 秒としており、端末の RA タイムアウトを防ぎつつマルチキャスト RA の頻度を抑えている。
+
+#### RS に対する RA ユニキャスト応答 (radvd UnicastOnly)
+
+VyOS の CLI では RS に対するユニキャスト応答の設定パラメータが提供されていない。ただし VyOS 内部で使用される radvd には `UnicastOnly` オプションが存在する。**本番で L2MC テーブル枯渇が発生した場合の緊急対策** として、radvd.conf を直接編集する手順を以下に記載する。
+
+```bash
+# 現在の radvd.conf を確認
+cat /run/radvd/radvd.conf
+
+# UnicastOnly を有効化 (interface ブロック内に追記)
+# ※ VyOS の commit/save で上書きされるため、永続化されない。
+#    commit 後に再度適用する必要がある。
+sudo sed -i '/^interface eth2.40/a\    UnicastOnly on;' /run/radvd/radvd.conf
+sudo sed -i '/^interface eth2.30/a\    UnicastOnly on;' /run/radvd/radvd.conf
+
+# radvd を再起動
+sudo systemctl restart radvd
+```
+
+**注意事項**:
+- `UnicastOnly on` にすると定期的なマルチキャスト RA が停止し、RS を送信した端末にのみユニキャストで RA を返す
+- VyOS の `commit` で radvd.conf が再生成されるため、設定は永続化されない。緊急対策用
+- 永続化が必要な場合は `/config/scripts/vyos-postconfig-bootup.script` に sed コマンドを追記する
+
+#### IPv6 ファイアウォールでの不正 RA ドロップ
+
+VyOS 側でも、VLAN 30/40 のクライアント側から送信される不正 RA を破棄するファイアウォールルールを追加する。スイッチ側 RA Guard との多層防御。
+
+```
+# === IPv6 ファイアウォール: 不正 RA ドロップ ===
+
+# VLAN 30 → r3 へのインバウンドで RA を遮断
+set firewall ipv6 name BLOCK-CLIENT-RA default-action accept
+set firewall ipv6 name BLOCK-CLIENT-RA rule 10 action drop
+set firewall ipv6 name BLOCK-CLIENT-RA rule 10 protocol icmpv6
+set firewall ipv6 name BLOCK-CLIENT-RA rule 10 icmpv6 type 134
+set firewall ipv6 name BLOCK-CLIENT-RA rule 10 description 'Drop RA from clients'
+
+set firewall ipv6 input filter rule 20 action jump
+set firewall ipv6 input filter rule 20 jump-target BLOCK-CLIENT-RA
+set firewall ipv6 input filter rule 20 inbound-interface name eth2.30
+
+set firewall ipv6 input filter rule 30 action jump
+set firewall ipv6 input filter rule 30 jump-target BLOCK-CLIENT-RA
+set firewall ipv6 input filter rule 30 inbound-interface name eth2.40
 ```
 
 ### DHCPv6
 
 Windows/macOS 向け。iOS/Android は DHCPv6 IA_NA 非対応のため SLAAC のみ。
 
-```
-# === DHCPv6 ===
+VLAN 30/40 が同一 /64 を共有するため、VyOS の制約 (同一サブネットを複数 shared-network に定義不可) により **統合プール (V6-POOL)** で運用する。range タグ (`staff` / `user`) でアドレス範囲を論理分離。
 
-# VLAN 30
-set service dhcpv6-server shared-network-name STAFF-V6 subnet <delegated-prefix>::/64 address-range start <prefix>::1000 stop <prefix>::ffff
-set service dhcpv6-server shared-network-name STAFF-V6 subnet <delegated-prefix>::/64 name-server <prefix>::1
-
-# VLAN 40
-set service dhcpv6-server shared-network-name USER-V6 subnet <delegated-prefix>::/64 address-range start <prefix>::1:0 stop <prefix>::1:ffff
-set service dhcpv6-server shared-network-name USER-V6 subnet <delegated-prefix>::/64 name-server <prefix>::1
 ```
+# === DHCPv6 (統合プール) ===
+
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 range staff start <prefix>::1000
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 range staff stop <prefix>::ffff
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 range user start <prefix>::1:0
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 range user stop <prefix>::1:ffff
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 subnet-id 60
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 option name-server <prefix>::1
+```
+
+> **注**: `<delegated-prefix>` と `<prefix>` は r1 の DHCPv6-PD で取得した /64 に依存し動的に変わる。[`pd-update-venue.sh`](../../scripts/pd-update-venue.sh) が自動投入するため、手動設定は不要。
 
 ## 5. ndppd (NDP Proxy)
 
-VLAN 30/40 が同一 /64 を共有するため、インバウンド IPv6 の Neighbor Solicitation を正しいインターフェースに振り分ける。VyOS CLI 外の設定ファイル。
+VLAN 30/40 が同一 /64 を共有するため、インバウンド IPv6 の Neighbor Solicitation を正しいインターフェースに振り分ける。VyOS CLI 外の設定ファイル。ndppd は L2MC テーブル枯渇対策としても効果がある — WireGuard トンネル越しの NS/NA をインターフェース単位で代理応答することで、マルチキャストグループの生成を上流に伝播させない。
 
 ```
 # /etc/ndppd.conf
@@ -253,15 +314,41 @@ proxy wg0 {
 
 ### 広告・受信
 
-| 方向 | 経路 |
-|------|------|
-| 広告 | 192.168.11.0/24, 192.168.30.0/24, 192.168.40.0/22 |
-| 受信 (r1) | 0.0.0.0/0 (デフォルトルート) |
-| 受信 (r2-gcp) | r1 経由の経路 (GCP トランジット、フォールバック) + GCE サブネット |
+| 方向 | AFI | 経路 |
+|------|-----|------|
+| 広告 | IPv4 | 192.168.11.0/24, 192.168.30.0/24, 192.168.40.0/22 |
+| 広告 | IPv6 | `redistribute connected` (OPTAGE /64, GCP /64 を自動広告) |
+| 受信 (r1) | IPv4/IPv6 | 0.0.0.0/0, ::/0 (デフォルトルート) |
+| 受信 (r2-gcp) | IPv4/IPv6 | r1 経由の経路 (フォールバック) + GCE サブネット |
 
 ### 経路優先度制御
 
-WireGuard 直接リンク (r1) を優先し、r2-gcp 経由をフォールバックにする。AS path 長 (2 hop vs 3 hop) で自然に選択されるが、確実性のため local-preference を併用する。
+WireGuard 直接リンク (r1) を優先し、r2-gcp 経由をフォールバックにする。IPv4/IPv6 とも同じ route-map (WG-IN: LP=200, GCP-IN: LP=50) を適用。
+
+### BFD (Bidirectional Forwarding Detection)
+
+BGP デフォルトの hold timer (90 秒) では障害検知が遅すぎるため、BFD を併用して約 1 秒で検知する。
+
+| ピア | BFD interval | multiplier | 検知時間 |
+|------|-------------|------------|---------|
+| 10.255.0.1 (r1) | 300ms | 3 | ~0.9s |
+| 10.255.2.2 (r2) | 300ms | 3 | ~0.9s |
+
+### IPv6 出口ヘルスチェック (`v6-health-monitor.sh`)
+
+BFD / BGP ではルーター間リンク障害のみ検知でき、出口の ISP 障害 (r1 正常だが OPTAGE 停止) は検知できない。アクティブプローブで各出口のインターネット疎通性を監視し、障害時は該当プレフィックスの RA を lifetime=0 に変更してクライアントの使用を停止させる。
+
+**スクリプト**: [`scripts/v6-health-monitor.sh`](../../scripts/v6-health-monitor.sh)
+**配置先**: `/config/scripts/v6-health-monitor.sh` (r3)
+**実行間隔**: 5 秒 (`system task-scheduler task v6-health interval 5`)
+
+| パラメータ | 値 | 説明 |
+|---|---|---|
+| プローブ先 | Google DNS, Cloudflare DNS | いずれか 1 つに到達できれば OK |
+| 障害判定 | 3 回連続失敗 (15 秒) | 一時的な揺らぎを無視 |
+| 復旧判定 | 3 回連続成功 (15 秒) | フラップ防止 |
+| 障害アクション | RA `preferred-lifetime 0` + `valid-lifetime 0` | クライアントが新規接続でこのプレフィックスを使用しなくなる |
+| 復旧アクション | RA lifetime をデフォルトに戻す | クライアントがプレフィックスを再び使用可能に |
 
 ```
 # === BGP ===
@@ -273,12 +360,33 @@ set protocols bgp neighbor 10.255.0.1 remote-as 65002
 set protocols bgp neighbor 10.255.0.1 description 'Home router (r1)'
 set protocols bgp neighbor 10.255.0.1 address-family ipv4-unicast
 set protocols bgp neighbor 10.255.0.1 address-family ipv4-unicast route-map import WG-IN
+set protocols bgp neighbor 10.255.0.1 address-family ipv6-unicast
+set protocols bgp neighbor 10.255.0.1 address-family ipv6-unicast route-map import WG-IN
+set protocols bgp neighbor 10.255.0.1 address-family ipv6-unicast nexthop-local unchanged
+set protocols bgp neighbor 10.255.0.1 bfd
 
 # --- r2-gcp (GCP トランジット) ---
 set protocols bgp neighbor 10.255.2.2 remote-as 64512
 set protocols bgp neighbor 10.255.2.2 description 'r2-gcp'
 set protocols bgp neighbor 10.255.2.2 address-family ipv4-unicast
 set protocols bgp neighbor 10.255.2.2 address-family ipv4-unicast route-map import GCP-IN
+set protocols bgp neighbor 10.255.2.2 address-family ipv6-unicast
+set protocols bgp neighbor 10.255.2.2 address-family ipv6-unicast route-map import GCP-IN
+set protocols bgp neighbor 10.255.2.2 address-family ipv6-unicast nexthop-local unchanged
+set protocols bgp neighbor 10.255.2.2 bfd
+
+# --- BFD ---
+set protocols bfd peer 10.255.0.1 interval receive 300
+set protocols bfd peer 10.255.0.1 interval transmit 300
+set protocols bfd peer 10.255.0.1 interval multiplier 3
+set protocols bfd peer 10.255.0.1 source address 10.255.0.2
+set protocols bfd peer 10.255.2.2 interval receive 300
+set protocols bfd peer 10.255.2.2 interval transmit 300
+set protocols bfd peer 10.255.2.2 interval multiplier 3
+set protocols bfd peer 10.255.2.2 source address 10.255.2.1
+
+# --- IPv6 connected ルート再配布 (OPTAGE/GCP プレフィックス自動広告) ---
+set protocols bgp address-family ipv6-unicast redistribute connected
 
 # --- Route Map ---
 
@@ -632,7 +740,7 @@ set interfaces wireguard wg1 peer r2-gcp public-key <r2-public-key>
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 10.255.2.2/32
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 10.255.1.0/30
 set interfaces wireguard wg1 peer r2-gcp allowed-ips 192.168.10.0/24
-set interfaces wireguard wg1 peer r2-gcp address 34.97.94.203
+set interfaces wireguard wg1 peer r2-gcp address 34.97.197.104
 set interfaces wireguard wg1 peer r2-gcp port 51821
 set interfaces wireguard wg1 peer r2-gcp persistent-keepalive 25
 
@@ -680,18 +788,23 @@ set service router-advert interface eth2.30 prefix <delegated-prefix>::/64 auton
 set service router-advert interface eth2.30 managed-flag true
 set service router-advert interface eth2.30 other-config-flag true
 set service router-advert interface eth2.30 name-server <prefix>::1
+set service router-advert interface eth2.30 interval max 60
+set service router-advert interface eth2.30 interval min 20
 
 set service router-advert interface eth2.40 prefix <delegated-prefix>::/64 autonomous-flag true
 set service router-advert interface eth2.40 managed-flag true
 set service router-advert interface eth2.40 other-config-flag true
 set service router-advert interface eth2.40 name-server <prefix>::1
+set service router-advert interface eth2.40 interval max 60
+set service router-advert interface eth2.40 interval min 20
 
-# --- DHCPv6 ---
-set service dhcpv6-server shared-network-name STAFF-V6 subnet <delegated-prefix>::/64 address-range start <prefix>::1000 stop <prefix>::ffff
-set service dhcpv6-server shared-network-name STAFF-V6 subnet <delegated-prefix>::/64 name-server <prefix>::1
-
-set service dhcpv6-server shared-network-name USER-V6 subnet <delegated-prefix>::/64 address-range start <prefix>::1:0 stop <prefix>::1:ffff
-set service dhcpv6-server shared-network-name USER-V6 subnet <delegated-prefix>::/64 name-server <prefix>::1
+# --- DHCPv6 (統合プール — 同一 /64 制約のため STAFF/USER を分離不可) ---
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 range staff start <prefix>::1000
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 range staff stop <prefix>::ffff
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 range user start <prefix>::1:0
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 range user stop <prefix>::1:ffff
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 subnet-id 60
+set service dhcpv6-server shared-network-name V6-POOL subnet <delegated-prefix>::/64 option name-server <prefix>::1
 
 # --- BGP ---
 set protocols bgp system-as 65001
@@ -760,6 +873,20 @@ set firewall ipv4 input filter rule 10 inbound-interface name eth2.40
 
 # MSS Clamping
 set firewall options interface wg0 adjust-mss clamp-mss-to-pmtu
+
+# IPv6: クライアントからの不正 RA をドロップ (スイッチ側 RA Guard との多層防御)
+set firewall ipv6 name BLOCK-CLIENT-RA default-action accept
+set firewall ipv6 name BLOCK-CLIENT-RA rule 10 action drop
+set firewall ipv6 name BLOCK-CLIENT-RA rule 10 protocol icmpv6
+set firewall ipv6 name BLOCK-CLIENT-RA rule 10 icmpv6 type 134
+set firewall ipv6 name BLOCK-CLIENT-RA rule 10 description 'Drop RA from clients'
+
+set firewall ipv6 input filter rule 20 action jump
+set firewall ipv6 input filter rule 20 jump-target BLOCK-CLIENT-RA
+set firewall ipv6 input filter rule 20 inbound-interface name eth2.30
+set firewall ipv6 input filter rule 30 action jump
+set firewall ipv6 input filter rule 30 jump-target BLOCK-CLIENT-RA
+set firewall ipv6 input filter rule 30 inbound-interface name eth2.40
 
 # --- Flow Accounting ---
 set system flow-accounting interface eth2.30

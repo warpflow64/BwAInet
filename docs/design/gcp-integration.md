@@ -228,12 +228,29 @@ set interfaces wireguard wg1 peer r2-gcp allowed-ips fd00:255:2::2/128
 set interfaces wireguard wg1 peer r2-gcp allowed-ips <gcp-prefix>::/64
 ```
 
+#### r2-gcp wg1 (r1 向け) 更新
+
+BGP フェイルオーバー (r3 直結断 → r1 経由迂回) に備え、r1 peer に会場プレフィックスも許可する:
+
+```
+set interfaces wireguard wg1 address fd00:255:1::2/126
+
+set interfaces wireguard wg1 peer r1 allowed-ips fd00:255:1::1/128
+set interfaces wireguard wg1 peer r1 allowed-ips 192.168.10.0/24
+set interfaces wireguard wg1 peer r1 allowed-ips 192.168.11.0/24
+set interfaces wireguard wg1 peer r1 allowed-ips 192.168.30.0/24
+set interfaces wireguard wg1 peer r1 allowed-ips 192.168.40.0/22
+```
+
 #### r2-gcp wg2 (r3 向け) 更新
+
+BGP フェイルオーバー (r1 直結断 → r3 経由迂回) に備え、r3 peer に自宅プレフィックスも許可する:
 
 ```
 set interfaces wireguard wg2 address fd00:255:2::2/126
 
 set interfaces wireguard wg2 peer r3 allowed-ips fd00:255:2::1/128
+set interfaces wireguard wg2 peer r3 allowed-ips 192.168.10.0/24
 set interfaces wireguard wg2 peer r3 allowed-ips 192.168.11.0/24
 set interfaces wireguard wg2 peer r3 allowed-ips 192.168.30.0/24
 set interfaces wireguard wg2 peer r3 allowed-ips 192.168.40.0/22
